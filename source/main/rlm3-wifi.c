@@ -625,7 +625,7 @@ extern void RLM3_UART4_ErrorCallback(uint32_t status_flags)
 	LOG_ERROR("UART Error %x", (int)status_flags);
 }
 
-extern __weak void RLM3_WIFI_Receive_Callback(uint8_t data)
+extern __attribute__((weak)) void RLM3_WIFI_Receive_Callback(uint8_t data)
 {
 	// DO NOT MODIFIY THIS FUNCTION.  Override it by declaring a non-weak version in your project files.
 }
