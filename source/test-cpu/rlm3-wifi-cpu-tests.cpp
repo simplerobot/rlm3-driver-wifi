@@ -9,6 +9,11 @@
 #include "logger.h"
 
 
+extern void RLM3_WIFI_Receive_Callback(uint8_t data)
+{
+	MOCK_CALL(data);
+}
+
 static void DoTransmit(const char* expected_text)
 {
 	for (const char* cursor = expected_text; *cursor != 0; cursor++)
@@ -53,19 +58,19 @@ static void ExpectSendCommand(const char* transmit, RLM3_Time timeout, const cha
 static void ExpectInit()
 {
 	EXPECT(__HAL_RCC_GPIOG_CLK_ENABLE());
-	EXPECT(HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET));
+	EXPECT(HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET));
 	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
-	GPIO_InitStruct.Pin = WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin;
+	GPIO_InitStruct.Pin = WIFI_ENABLE_Pin | WIFI_RESET_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	EXPECT(HAL_GPIO_Init(GPIOG, &GPIO_InitStruct));
-	EXPECT(RLM3_Delay(5));
-	EXPECT(RLM3_UART4_Init(115200));
+	EXPECT(HAL_GPIO_WritePin(GPIOG, WIFI_RESET_Pin, GPIO_PIN_RESET));
 	EXPECT(HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin, GPIO_PIN_SET));
-	EXPECT(RLM3_Delay(50));
+	EXPECT(RLM3_Delay(5));
 	EXPECT(HAL_GPIO_WritePin(GPIOG, WIFI_RESET_Pin, GPIO_PIN_SET));
-	EXPECT(RLM3_Delay(5000));
+	EXPECT(RLM3_Delay(995));
+	EXPECT(RLM3_UART4_Init(115200));
 	ExpectSendCommand("AT\r\n", 100, "AT\r\nOK\r");
 	ExpectSendCommand("ATE0\r\n", 1000, "\nATE0\r\nOK\r");
 	ExpectSendCommand("AT+CWAUTOCONN=0\r\n", 1000, "\nOK\r");
@@ -74,8 +79,8 @@ static void ExpectInit()
 
 static void ExpectDeinit()
 {
-	EXPECT(HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET));
 	EXPECT(RLM3_UART4_Deinit());
+	EXPECT(HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET));
 	EXPECT(HAL_GPIO_DeInit(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin));
 }
 
@@ -367,35 +372,76 @@ TEST_CASE(RLM3_WIFI_Transmit_HappyCase)
 	RLM3_WIFI_Deinit();
 }
 
+TEST_CASE(RLM3_WIFI_Transmit_MaxSize)
+{
+	constexpr size_t BUFFER_SIZE = 1024;
+	uint8_t buffer[BUFFER_SIZE + 1] = { 0 };
+	for (size_t i = 0; i < BUFFER_SIZE; i++)
+		buffer[i] = 'a';
 
+	ExpectInit();
+	ExpectSendCommand("AT+CWJAP_CUR=\"test-sid\",\"test-pwd\"\r\n", 30000, { "\nWIFI CONNECTED\r", "\nWIFI GOT IP\r", "\n\r\nOK\r" });
+	ExpectSendCommand("AT+CIPCLOSE\r\n", 10000, "\nFAIL\r");
+	ExpectSendCommand("AT+CIPSTART=\"TCP\",\"test-server\",test-port\r\n", 20000, { "\nCONNECT\r", "\n\r\nOK\r" });
+	ExpectSendCommand("AT+CIPSEND=1024\r\n", 10000, { "\nOK\r" });
+	EXPECT(RLM3_GetCurrentTime())_AND_RETURN((RLM3_Time)5);
+	EXPECT(RLM3_TakeUntil(5, 10000))_AND_DO(DoRecieve("\n>"))_AND_RETURN(true);
+	EXPECT(RLM3_GiveFromISR((void*)1));
+	EXPECT(RLM3_UART4_EnsureTransmit());
+	EXPECT(RLM3_Take())_AND_DO(DoTransmit((const char*)buffer));
+	EXPECT(RLM3_GiveFromISR((void*)1));
+	EXPECT(RLM3_GetCurrentTime())_AND_RETURN((RLM3_Time)5);
+	EXPECT(RLM3_TakeUntil(5, 10000))_AND_DO(DoRecieve("\r\nRecv 7 bytes\r"))_AND_RETURN(true);
+	EXPECT(RLM3_GiveFromISR((void*)1));
+	EXPECT(RLM3_GetCurrentTime())_AND_RETURN((RLM3_Time)5);
+	EXPECT(RLM3_TakeUntil(5, 10000))_AND_DO(DoRecieve("\r\nSEND OK\r"))_AND_RETURN(true);
+	EXPECT(RLM3_GiveFromISR((void*)1));
+	ExpectDeinit();
 
+	RLM3_WIFI_Init();
+	ASSERT(RLM3_WIFI_NetworkConnect("test-sid", "test-pwd"));
+	ASSERT(RLM3_WIFI_ServerConnect("test-server", "test-port"));
+	ASSERT(RLM3_WIFI_Transmit(buffer, BUFFER_SIZE));
+	RLM3_WIFI_Deinit();
+}
 
-/*
+TEST_CASE(RLM3_WIFI_Transmit_OverSize)
+{
+	constexpr size_t BUFFER_SIZE = 1025;
+	uint8_t buffer[BUFFER_SIZE + 1] = { 0 };
+	for (size_t i = 0; i < BUFFER_SIZE; i++)
+		buffer[i] = 'a';
 
-	BeginCommand();
-	Send("AT+CIPSEND=", size_str, NULL);
+	ExpectInit();
+	ExpectSendCommand("AT+CWJAP_CUR=\"test-sid\",\"test-pwd\"\r\n", 30000, { "\nWIFI CONNECTED\r", "\nWIFI GOT IP\r", "\n\r\nOK\r" });
+	ExpectSendCommand("AT+CIPCLOSE\r\n", 10000, "\nFAIL\r");
+	ExpectSendCommand("AT+CIPSTART=\"TCP\",\"test-server\",test-port\r\n", 20000, { "\nCONNECT\r", "\n\r\nOK\r" });
+	ExpectDeinit();
 
-	bool result = true;
-	if (result)
-		result = WaitForResponse("transmit_a", 10000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
-	if (result)
-		result = WaitForResponse("transmit_b", 10000, COMMAND_GO_AHEAD, COMMAND_ERROR | COMMAND_FAIL);
-	if (result)
-		SendRaw(data, size);
-	if (result)
-		result = WaitForResponse("transmit_c", 10000, COMMAND_BYTES_RECEIVED, COMMAND_ERROR | COMMAND_FAIL);
-	if (result)
-		result = WaitForResponse("transmit_d", 10000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL | COMMAND_SEND_FAIL);
-	EndCommand();
+	RLM3_WIFI_Init();
+	ASSERT(RLM3_WIFI_NetworkConnect("test-sid", "test-pwd"));
+	ASSERT(RLM3_WIFI_ServerConnect("test-server", "test-port"));
+	ASSERT(!RLM3_WIFI_Transmit(buffer, BUFFER_SIZE));
+	RLM3_WIFI_Deinit();
+}
 
-	return result;
+TEST_CASE(RLM3_WIFI_Receive_HappyCase)
+{
+	ExpectInit();
+	ExpectSendCommand("AT+CWJAP_CUR=\"test-sid\",\"test-pwd\"\r\n", 30000, { "\nWIFI CONNECTED\r", "\nWIFI GOT IP\r", "\n\r\nOK\r" });
+	ExpectSendCommand("AT+CIPCLOSE\r\n", 10000, "\nFAIL\r");
+	ExpectSendCommand("AT+CIPSTART=\"TCP\",\"test-server\",test-port\r\n", 20000, { "\nCONNECT\r", "\n\r\nOK\r" });
+	EXPECT(RLM3_Delay(1000))_AND_DO(DoRecieve("\n+IPD,5:abcde\r\n"));
+	EXPECT(RLM3_WIFI_Receive_Callback('a'));
+	EXPECT(RLM3_WIFI_Receive_Callback('b'));
+	EXPECT(RLM3_WIFI_Receive_Callback('c'));
+	EXPECT(RLM3_WIFI_Receive_Callback('d'));
+	EXPECT(RLM3_WIFI_Receive_Callback('e'));
+	ExpectDeinit();
 
-	Max size
-	Too Big
-	Fail in multiple steps.
-
-
-extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size);
-extern void RLM3_WIFI_Receive_Callback(uint8_t data);
-
- */
+	RLM3_WIFI_Init();
+	ASSERT(RLM3_WIFI_NetworkConnect("test-sid", "test-pwd"));
+	ASSERT(RLM3_WIFI_ServerConnect("test-server", "test-port"));
+	RLM3_Delay(1000);
+	RLM3_WIFI_Deinit();
+}

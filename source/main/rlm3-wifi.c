@@ -96,6 +96,14 @@ static volatile uint32_t g_at_version = 0;
 static volatile uint32_t g_sdk_version = 0;
 static uint32_t g_receive_length = 0;
 
+#ifdef TEST
+static uint8_t g_invalid_buffer[32];
+static uint32_t g_invalid_buffer_length = 0;
+static State g_last_valid_state = STATE_INVALID;
+static uint32_t g_invalid_count = 0;
+static uint32_t g_error_count = 0;
+#endif
+
 
 static void BeginCommand()
 {
@@ -221,16 +229,15 @@ extern void RLM3_WIFI_Init()
 {
 	__HAL_RCC_GPIOG_CLK_ENABLE();
 
-	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET);
 
 	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
-	GPIO_InitStruct.Pin = WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin;
+	GPIO_InitStruct.Pin = WIFI_ENABLE_Pin | WIFI_RESET_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 
-	RLM3_Delay(5);
 	g_transmit_data = NULL;
 	g_state = STATE_INITIAL;
 	g_expected = NULL;
@@ -239,14 +246,19 @@ extern void RLM3_WIFI_Init()
 	g_tcp_connected = false;
 	g_segment_count = 0;
 	g_receive_length = 0;
+#ifdef TEST
+	g_invalid_count = 0;
+	g_error_count = 0;
+#endif
 
-	RLM3_UART4_Init(115200);
-
+	HAL_GPIO_WritePin(GPIOG, WIFI_RESET_Pin, GPIO_PIN_RESET);
 	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin, GPIO_PIN_SET);
-	RLM3_Delay(50);
+	RLM3_Delay(5);
 
 	HAL_GPIO_WritePin(GPIOG, WIFI_RESET_Pin, GPIO_PIN_SET);
-	RLM3_Delay(5000);
+	RLM3_Delay(995);
+
+	RLM3_UART4_Init(115200);
 
 	SendCommandStandard("ping", 100, "AT", NULL);
 	SendCommandStandard("disable_echo", 1000, "ATE0", NULL);
@@ -256,11 +268,14 @@ extern void RLM3_WIFI_Init()
 
 extern void RLM3_WIFI_Deinit()
 {
-	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET);
-
 	RLM3_UART4_Deinit();
 
+	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET);
 	HAL_GPIO_DeInit(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin);
+
+#ifdef TEST
+	LOG_ALWAYS("Invalid %d Error %d", (int)g_invalid_count, (int)g_error_count);
+#endif
 }
 
 extern bool RLM3_WIFI_IsInit()
@@ -368,7 +383,8 @@ extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size)
 
 extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 {
-	LOG_TRACE("Data 0x%x '%c'", x, (x >= 0x20 && x <= 0x7F) ? x : '?');
+	if (IS_LOG_TRACE() && x != '\r')
+		RLM3_DebugOutputFromISR(x);
 
 	// If we are expecting something specific, make sure that's what we get.
 	if (g_expected != NULL)
@@ -592,9 +608,25 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 	}
 
-	ASSERT(next != STATE_INVALID);
+#ifdef TEST
+	if (g_invalid_buffer_length > 0)
+	{
+		if (next != STATE_INVALID || g_invalid_buffer_length + 2 >= sizeof(g_invalid_buffer))
+		{
+			g_invalid_buffer[g_invalid_buffer_length++] = 0;
+			LOG_ERROR("Invalid State %d '%s'", g_last_valid_state, g_invalid_buffer);
+			g_invalid_buffer_length = 0;
+		}
+	}
+
+	if (next != STATE_INVALID)
+		g_last_valid_state = next;
+	else
+		g_invalid_buffer[g_invalid_buffer_length++] = x;
+
 	if (next == STATE_INVALID)
-		LOG_ERROR("Missing State %d Input %x '%c'", g_state, x, (x >= 0x20 && x <= 0x7F) ? x : '?');
+		g_invalid_count++;
+#endif
 
 	g_state = next;
 }
@@ -633,7 +665,10 @@ extern bool RLM3_UART4_TransmitCallback(uint8_t* data_to_send)
 
 extern void RLM3_UART4_ErrorCallback(uint32_t status_flags)
 {
+#ifdef TEST
 	LOG_ERROR("UART Error %x", (int)status_flags);
+	g_error_count++;
+#endif
 }
 
 extern __attribute__((weak)) void RLM3_WIFI_Receive_Callback(uint8_t data)
