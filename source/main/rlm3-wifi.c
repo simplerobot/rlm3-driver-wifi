@@ -57,24 +57,24 @@ typedef enum State
 } State;
 
 
-static const uint32_t COMMAND_OK						= 1 << 0;
-static const uint32_t COMMAND_ERROR						= 1 << 1;
-static const uint32_t COMMAND_FAIL						= 1 << 2;
-static const uint32_t COMMAND_CONNECTION_TIMEOUT		= 1 << 3;
-static const uint32_t COMMAND_CONNECTION_WRONG_PASSWORD	= 1 << 4;
-static const uint32_t COMMAND_CONNECTION_MISSING_AP		= 1 << 5;
-static const uint32_t COMMAND_CONNECTION_FAILED			= 1 << 6;
-static const uint32_t COMMAND_SEND_OK					= 1 << 8;
-static const uint32_t COMMAND_SEND_FAIL					= 1 << 9;
-static const uint32_t COMMAND_GO_AHEAD					= 1 << 10;
-static const uint32_t COMMAND_ALREADY_CONNECTED			= 1 << 11;
-static const uint32_t COMMAND_WIFI_CONNECTED			= 1 << 12;
-static const uint32_t COMMAND_WIFI_DISCONNECT			= 1 << 13;
-static const uint32_t COMMAND_WIFI_GOT_IP				= 1 << 14;
-static const uint32_t COMMAND_CLOSED					= 1 << 15;
-static const uint32_t COMMAND_CONNECT					= 1 << 16;
-static const uint32_t COMMAND_BYTES_RECEIVED			= 1 << 17;
-static const uint32_t COMMAND_DNS_FAIL					= 1 << 18;
+static const uint32_t COMMAND_OK						= 1 << 0;  // 0x000001
+static const uint32_t COMMAND_ERROR						= 1 << 1;  // 0x000002
+static const uint32_t COMMAND_FAIL						= 1 << 2;  // 0x000004
+static const uint32_t COMMAND_CONNECTION_TIMEOUT		= 1 << 3;  // 0x000008
+static const uint32_t COMMAND_CONNECTION_WRONG_PASSWORD	= 1 << 4;  // 0x000010
+static const uint32_t COMMAND_CONNECTION_MISSING_AP		= 1 << 5;  // 0x000020
+static const uint32_t COMMAND_CONNECTION_FAILED			= 1 << 6;  // 0x000040
+static const uint32_t COMMAND_SEND_OK					= 1 << 7;  // 0x000080
+static const uint32_t COMMAND_SEND_FAIL					= 1 << 8;  // 0x000100
+static const uint32_t COMMAND_GO_AHEAD					= 1 << 9;  // 0x000200
+static const uint32_t COMMAND_ALREADY_CONNECTED			= 1 << 10; // 0x000400
+static const uint32_t COMMAND_WIFI_CONNECTED			= 1 << 11; // 0x000800
+static const uint32_t COMMAND_WIFI_DISCONNECT			= 1 << 12; // 0x001000
+static const uint32_t COMMAND_WIFI_GOT_IP				= 1 << 13; // 0x002000
+static const uint32_t COMMAND_CLOSED					= 1 << 14; // 0x004000
+static const uint32_t COMMAND_CONNECT					= 1 << 15; // 0x008000
+static const uint32_t COMMAND_BYTES_RECEIVED			= 1 << 16; // 0x010000
+static const uint32_t COMMAND_DNS_FAIL					= 1 << 17; // 0x020000
 
 
 static State g_state = STATE_INITIAL;
@@ -154,7 +154,10 @@ static void SendV(const char* action, va_list args)
 	while (command_count < MAX_SEND_COMMAND_ARGUMENTS && arg != NULL)
 	{
 		if (*arg != 0)
+		{
 			command_data[command_count++] = arg;
+			LOG_TRACE("SEND_%zd '%s'", command_count, arg);
+		}
 		arg = va_arg(args, const char*);
 	}
 	ASSERT(arg == NULL);
@@ -332,7 +335,7 @@ extern bool RLM3_WIFI_WaitServerConnected(RLM3_Time timeout_ms)
 		;
 	EndCommand();
 
-	return RLM3_WIFI_IsNetworkConnected();
+	return RLM3_WIFI_IsServerConnected();
 }
 
 extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size)
@@ -345,19 +348,19 @@ extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size)
 		return false;
 
 	BeginCommand();
-	Send("AT+CIPSEND=", size_str, NULL);
+	Send("transmit_a", "AT+CIPSEND=", size_str, NULL);
 
 	bool result = true;
 	if (result)
-		result = WaitForResponse("transmit_a", 10000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+		result = WaitForResponse("transmit_b", 10000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
 	if (result)
-		result = WaitForResponse("transmit_b", 10000, COMMAND_GO_AHEAD, COMMAND_ERROR | COMMAND_FAIL);
+		result = WaitForResponse("transmit_c", 10000, COMMAND_GO_AHEAD, COMMAND_ERROR | COMMAND_FAIL);
 	if (result)
 		SendRaw(data, size);
 	if (result)
-		result = WaitForResponse("transmit_c", 10000, COMMAND_BYTES_RECEIVED, COMMAND_ERROR | COMMAND_FAIL);
+		result = WaitForResponse("transmit_d", 10000, COMMAND_BYTES_RECEIVED, COMMAND_ERROR | COMMAND_FAIL);
 	if (result)
-		result = WaitForResponse("transmit_d", 10000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL | COMMAND_SEND_FAIL);
+		result = WaitForResponse("transmit_e", 10000, COMMAND_SEND_OK, COMMAND_ERROR | COMMAND_FAIL | COMMAND_SEND_FAIL);
 	EndCommand();
 
 	return result;
@@ -365,6 +368,8 @@ extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size)
 
 extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 {
+	LOG_TRACE("Data 0x%x '%c'", x, (x >= 0x20 && x <= 0x7F) ? x : '?');
+
 	// If we are expecting something specific, make sure that's what we get.
 	if (g_expected != NULL)
 	{
@@ -373,13 +378,11 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		{
 			LOG_ERROR("Expect %x '%c' Actual %x '%c' State %d", expected, expected, x, (x >= 0x20 && x <= 0x7F) ? x : '?', g_state);
 			g_expected = NULL;
-			NotifyCommand(0);
 			g_state = STATE_INVALID;
 		}
 		else if (*g_expected == 0)
 		{
 			g_expected = NULL;
-			NotifyCommand(0);
 		}
 		return;
 	}
@@ -414,8 +417,9 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		if (x == '+') { next = STATE_X_PLUS; }
 		if (x == '>') { next = STATE_INITIAL; NotifyCommand(COMMAND_GO_AHEAD); }
 		if (x == 'A') { next = STATE_X_A; }
+		if (x == 'B') { next = STATE_END; g_expected = "in version"; }
 		if (x == 'b') { next = STATE_X_busy_SPACE; g_expected = "usy "; }
-		if (x == 'c') { next = STATE_END; g_expected = "ompile time:"; }
+		if (x == 'c') { next = STATE_END; g_expected = "ompile time"; }
 		if (x == 'C') { next = STATE_X_C; }
 		if (x == 'D') { next = STATE_X_DNS_SPACE_Fail; g_expected = "NS Fail"; }
 		if (x == 'E') { next = STATE_X_ERROR; g_expected = "RROR"; }
@@ -588,6 +592,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 	}
 
+	ASSERT(next != STATE_INVALID);
 	if (next == STATE_INVALID)
 		LOG_ERROR("Missing State %d Input %x '%c'", g_state, x, (x >= 0x20 && x <= 0x7F) ? x : '?');
 
@@ -608,13 +613,19 @@ extern bool RLM3_UART4_TransmitCallback(uint8_t* data_to_send)
 	{
 		// Move onto the next byte.
 		if (--g_transmit_count == 0)
+		{
 			g_transmit_data = NULL;
+			NotifyCommand(0);
+		}
 	}
 	else
 	{
 		// Otherwise, this string is done when we reach a nul character and all strings are done once we reach a NULL string.
 		if (**g_transmit_data == 0 && *(++g_transmit_data) == NULL)
+		{
 			g_transmit_data = NULL;
+			NotifyCommand(0);
+		}
 	}
 
 	return true;
