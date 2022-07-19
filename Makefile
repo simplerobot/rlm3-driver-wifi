@@ -78,7 +78,7 @@ $(CPU_TEST_BUILD_DIR) :
 	mkdir -p $@
 
 test-mcu : library test-cpu $(MCU_TEST_BUILD_DIR)/test.bin $(MCU_TEST_BUILD_DIR)/test.hex
-	$(PKG_HW_TEST_AGENT_DIR)/sr-hw-test-agent --run --test-timeout=30 --system-frequency=180m --trace-frequency=2m --board RLM36 --file $(MCU_TEST_BUILD_DIR)/test.bin
+	$(PKG_HW_TEST_AGENT_DIR)/sr-hw-test-agent --run --test-timeout=60 --system-frequency=180m --trace-frequency=2m --board RLM36 --file $(MCU_TEST_BUILD_DIR)/test.bin
 
 $(MCU_TEST_BUILD_DIR)/test.bin : $(MCU_TEST_BUILD_DIR)/test.elf
 	$(MCU_BN) $< $@

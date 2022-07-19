@@ -162,10 +162,7 @@ static void SendV(const char* action, va_list args)
 	while (command_count < MAX_SEND_COMMAND_ARGUMENTS && arg != NULL)
 	{
 		if (*arg != 0)
-		{
 			command_data[command_count++] = arg;
-			LOG_TRACE("SEND_%zd '%s'", command_count, arg);
-		}
 		arg = va_arg(args, const char*);
 	}
 	ASSERT(arg == NULL);
@@ -187,32 +184,15 @@ static void __attribute__((sentinel)) Send(const char* action, ...)
 	va_end(args);
 }
 
-static bool SendCommandCustomV(const char* action, uint32_t timeout, uint32_t pass_commands, uint32_t fail_commands, va_list args)
-{
-	BeginCommand();
-	SendV(action, args);
-	bool result = WaitForResponse(action, timeout, pass_commands, fail_commands);
-	EndCommand();
-
-	return result;
-}
-
 static bool __attribute__((sentinel)) SendCommandStandard(const char* action, uint32_t timeout, ...)
 {
 	va_list args;
 	va_start(args, timeout);
-	bool result = SendCommandCustomV(action, timeout, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL, args);
-	va_end(args);
 
-	return result;
-}
-
-static bool __attribute__((sentinel)) SendCommandCustom(const char* action, uint32_t timeout, uint32_t pass_commands, uint32_t fail_commands, ...)
-{
-	va_list args;
-	va_start(args, fail_commands);
-
-	bool result = SendCommandCustomV(action, timeout, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL, args);
+	BeginCommand();
+	SendV(action, args);
+	bool result = WaitForResponse(action, timeout, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+	EndCommand();
 
 	va_end(args);
 
@@ -225,14 +205,17 @@ static void NotifyCommand(uint32_t command)
 	RLM3_GiveFromISR(g_client_thread);
 }
 
-extern void RLM3_WIFI_Init()
+extern bool RLM3_WIFI_Init()
 {
+	if (RLM3_UART4_IsInit())
+		RLM3_UART4_Deinit();
+
 	__HAL_RCC_GPIOG_CLK_ENABLE();
 
-	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET);
 
 	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
-	GPIO_InitStruct.Pin = WIFI_ENABLE_Pin | WIFI_RESET_Pin;
+	GPIO_InitStruct.Pin = WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -247,23 +230,32 @@ extern void RLM3_WIFI_Init()
 	g_segment_count = 0;
 	g_receive_length = 0;
 #ifdef TEST
+	g_invalid_buffer_length = 0;
+	g_last_valid_state = STATE_INVALID;
 	g_invalid_count = 0;
 	g_error_count = 0;
 #endif
 
+	HAL_GPIO_WritePin(GPIOG, WIFI_BOOT_MODE_Pin, GPIO_PIN_SET);
 	HAL_GPIO_WritePin(GPIOG, WIFI_RESET_Pin, GPIO_PIN_RESET);
 	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin, GPIO_PIN_SET);
-	RLM3_Delay(5);
+	RLM3_Delay(10);
 
 	HAL_GPIO_WritePin(GPIOG, WIFI_RESET_Pin, GPIO_PIN_SET);
-	RLM3_Delay(995);
+	RLM3_Delay(990);
 
 	RLM3_UART4_Init(115200);
 
-	SendCommandStandard("ping", 100, "AT", NULL);
-	SendCommandStandard("disable_echo", 1000, "ATE0", NULL);
-	SendCommandStandard("manual_connect", 1000, "AT+CWAUTOCONN=0", NULL);
-	SendCommandStandard("transfer_mode", 1000, "AT+CIPMODE=0", NULL);
+	bool result = true;
+	if (result)
+		result = SendCommandStandard("ping", 100, "AT", NULL);
+	if (result)
+		result = SendCommandStandard("disable_echo", 1000, "ATE0", NULL);
+	if (result)
+		result = SendCommandStandard("manual_connect", 1000, "AT+CWAUTOCONN=0", NULL);
+	if (result)
+		result = SendCommandStandard("transfer_mode", 1000, "AT+CIPMODE=0", NULL);
+	return result;
 }
 
 extern void RLM3_WIFI_Deinit()
@@ -294,12 +286,40 @@ extern bool RLM3_WIFI_GetVersion(uint32_t* at_version, uint32_t* sdk_version)
 
 extern bool RLM3_WIFI_NetworkConnect(const char* ssid, const char* password)
 {
-	return SendCommandStandard("wifi_connect", 30000, "AT+CWJAP_CUR=\"", ssid, "\",\"", password, "\"", NULL);
+	RLM3_WIFI_NetworkDisconnect();
+
+	BeginCommand();
+
+	bool result = true;
+	if (result)
+		Send("network_connect_a", "AT+CWJAP_CUR=\"", ssid, "\",\"", password, "\"", NULL);
+	if (result)
+		result = WaitForResponse("network_connect_b", 30000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+	if (result)
+		result = WaitForResponse("network_connect_c", 30000, COMMAND_WIFI_CONNECTED, COMMAND_CONNECTION_TIMEOUT | COMMAND_CONNECTION_WRONG_PASSWORD | COMMAND_CONNECTION_MISSING_AP | COMMAND_CONNECTION_FAILED | COMMAND_ALREADY_CONNECTED | COMMAND_WIFI_DISCONNECT);
+	if (result)
+		result = WaitForResponse("network_connect_d", 30000, COMMAND_WIFI_GOT_IP, COMMAND_CONNECTION_TIMEOUT | COMMAND_CONNECTION_WRONG_PASSWORD | COMMAND_CONNECTION_MISSING_AP | COMMAND_CONNECTION_FAILED | COMMAND_ALREADY_CONNECTED | COMMAND_WIFI_DISCONNECT);
+	EndCommand();
+
+	return result;
 }
 
 extern void RLM3_WIFI_NetworkDisconnect()
 {
-	SendCommandStandard("wifi_disconnect", 1000, "AT+CWQAP", NULL);
+	BeginCommand();
+
+	if (g_wifi_connected)
+	{
+		bool result = true;
+		if (result)
+			Send("network_disconnect_a", "AT+CWQAP", NULL);
+		if (result)
+			result = WaitForResponse("network_disconnect_b", 1000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+		if (result)
+			WaitForResponse("network_disconnect_c", 1000, COMMAND_WIFI_DISCONNECT, 0);
+	}
+
+	EndCommand();
 }
 
 extern bool RLM3_WIFI_IsNetworkConnected()
@@ -307,50 +327,46 @@ extern bool RLM3_WIFI_IsNetworkConnected()
 	return g_wifi_connected && g_wifi_has_ip;
 }
 
-extern bool RLM3_WIFI_WaitNetworkConnected(RLM3_Time timeout_ms)
-{
-	RLM3_Time start_time = RLM3_GetCurrentTime();
-
-	BeginCommand();
-	while (!RLM3_WIFI_IsNetworkConnected() && RLM3_TakeUntil(start_time, timeout_ms))
-		;
-	EndCommand();
-
-	return RLM3_WIFI_IsNetworkConnected();
-}
-
 extern bool RLM3_WIFI_ServerConnect(const char* server, const char* service)
 {
-	// Make sure this connection is closed.
 	RLM3_WIFI_ServerDisconnect();
 
-	const uint32_t pass_commands = COMMAND_OK;
-	const uint32_t fail_commands = COMMAND_ERROR | COMMAND_FAIL | COMMAND_ALREADY_CONNECTED | COMMAND_DNS_FAIL;
-	return SendCommandCustom("tcp_connect", 20000, pass_commands, fail_commands, "AT+CIPSTART=\"TCP\",\"", server, "\",", service, NULL);
+	BeginCommand();
+
+	bool result = true;
+	if (result)
+		Send("tcp_connect_a", "AT+CIPSTART=\"TCP\",\"", server, "\",", service, NULL);
+	if (result)
+		result = WaitForResponse("tcp_connect_b", 30000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+	if (result)
+		result = WaitForResponse("tcp_connect_c", 30000, COMMAND_CONNECT, COMMAND_CONNECTION_TIMEOUT | COMMAND_CONNECTION_WRONG_PASSWORD | COMMAND_CONNECTION_MISSING_AP | COMMAND_CONNECTION_FAILED | COMMAND_WIFI_DISCONNECT | COMMAND_CLOSED | COMMAND_DNS_FAIL);
+
+	EndCommand();
+
+	return result;
 }
 
 extern void RLM3_WIFI_ServerDisconnect()
 {
-	const uint32_t pass_commands = COMMAND_OK | COMMAND_ERROR | COMMAND_FAIL;
-	const uint32_t fail_commands = 0;
-	SendCommandCustom("tcp_disconnect", 10000, pass_commands, fail_commands, "AT+CIPCLOSE", NULL);
+	BeginCommand();
+
+	if (g_tcp_connected)
+	{
+		bool result = true;
+		if (result)
+			Send("tcp_disconnect_a", "AT+CIPCLOSE", NULL);
+		if (result)
+			result = WaitForResponse("tcp_disconnect_b", 1000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+		if (result)
+			result = WaitForResponse("tcp_disconnect_c", 1000, COMMAND_CLOSED, 0);
+	}
+
+	EndCommand();
 }
 
 extern bool RLM3_WIFI_IsServerConnected()
 {
 	return g_tcp_connected;
-}
-
-extern bool RLM3_WIFI_WaitServerConnected(RLM3_Time timeout_ms)
-{
-	RLM3_Time start_time = RLM3_GetCurrentTime();
-
-	BeginCommand();
-	while (!RLM3_WIFI_IsServerConnected() && RLM3_TakeUntil(start_time, timeout_ms))
-		;
-	EndCommand();
-
-	return RLM3_WIFI_IsServerConnected();
 }
 
 extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size)
@@ -637,8 +653,12 @@ extern bool RLM3_UART4_TransmitCallback(uint8_t* data_to_send)
 		return false;
 
 	// Send this byte and move to the next.
-	*data_to_send = **g_transmit_data;
+	uint8_t x = **g_transmit_data;
+	*data_to_send = x;
 	(*g_transmit_data)++;
+
+	if (IS_LOG_TRACE() && x != '\r')
+		RLM3_DebugOutputFromISR(x);
 
 	// If this is binary data, we only have one buffer and we are done when it is sent.
 	if (g_transmit_count > 0)
@@ -666,7 +686,7 @@ extern bool RLM3_UART4_TransmitCallback(uint8_t* data_to_send)
 extern void RLM3_UART4_ErrorCallback(uint32_t status_flags)
 {
 #ifdef TEST
-	LOG_ERROR("UART Error %x", (int)status_flags);
+//	LOG_ERROR("UART Error %x", (int)status_flags);
 	g_error_count++;
 #endif
 }
