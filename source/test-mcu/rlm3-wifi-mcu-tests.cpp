@@ -1,12 +1,23 @@
 #include "Test.hpp"
 #include "rlm3-wifi.h"
+#include "rlm3-task.h"
 #include "logger.h"
-
+#include <cstring>
 #include <initializer_list>
 
 
 LOGGER_ZONE(TEST);
 
+
+static size_t g_recv_count = 0;
+static uint8_t g_recv_buffer[32];
+
+extern void RLM3_WIFI_Receive_Callback(uint8_t data)
+{
+	if (g_recv_count < sizeof(g_recv_buffer))
+		g_recv_buffer[g_recv_count] = data;
+	g_recv_count++;
+}
 
 TEST_CASE(RLM3_WIFI_Lifecycle)
 {
@@ -51,6 +62,25 @@ TEST_CASE(RLM3_WIFI_ServerConnect_HappyCase)
 	RLM3_WIFI_ServerDisconnect();
 	ASSERT(!RLM3_WIFI_IsServerConnected());
 	RLM3_WIFI_Deinit();
+}
+
+TEST_CASE(RLM3_WIFI_SendReceive)
+{
+	ASSERT(RLM3_WIFI_Init());
+	ASSERT(RLM3_WIFI_NetworkConnect("simplerobots", "gKFAED2xrf258vEp"));
+	ASSERT(!RLM3_WIFI_IsServerConnected());
+	ASSERT(RLM3_WIFI_ServerConnect("www.google.com", "80"));
+	ASSERT(RLM3_WIFI_IsServerConnected());
+	g_recv_count = 0;
+	const char* command = "GET /\r\n";
+	RLM3_WIFI_Transmit((const uint8_t*)command, std::strlen(command));
+	RLM3_Delay(1000);
+	RLM3_WIFI_ServerDisconnect();
+	ASSERT(!RLM3_WIFI_IsServerConnected());
+	RLM3_WIFI_Deinit();
+
+	ASSERT(g_recv_count > 1024);
+	ASSERT(std::strncmp((char*)g_recv_buffer, "HTTP/1.0 200 OK", 15) == 0);
 }
 
 TEST_SETUP(WIFI_LOGGING)
