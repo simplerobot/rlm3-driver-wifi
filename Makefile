@@ -5,7 +5,7 @@ GITHUB_DEPS += simplerobot/test-stm32
 GITHUB_DEPS += simplerobot/mock
 GITHUB_DEPS += simplerobot/rlm3-hardware
 GITHUB_DEPS += simplerobot/rlm3-base
-GITHUB_DEPS += simplerobot/rlm3-mock-base
+GITHUB_DEPS += simplerobot/rlm3-sim-base
 GITHUB_DEPS += simplerobot/rlm3-driver-base
 GITHUB_DEPS += simplerobot/hw-test-agent
 include ../build-scripts/build/release/include.make
@@ -35,7 +35,7 @@ RELEASE_DIR = $(BUILD_DIR)/release
 
 LIBRARY_FILES = $(notdir $(wildcard $(MAIN_SOURCE_DIR)/*))
 
-CPU_TEST_SOURCE_DIRS = $(MAIN_SOURCE_DIR) $(CPU_TEST_SOURCE_DIR) $(PKG_RLM3_BASE_DIR) $(PKG_LOGGER_DIR) $(PKG_TEST_DIR) $(PKG_MOCK_DIR) $(PKG_RLM3_MOCK_BASE_DIR) 
+CPU_TEST_SOURCE_DIRS = $(MAIN_SOURCE_DIR) $(CPU_TEST_SOURCE_DIR) $(PKG_RLM3_BASE_DIR) $(PKG_LOGGER_DIR) $(PKG_TEST_DIR) $(PKG_MOCK_DIR) $(PKG_RLM3_SIM_BASE_DIR) 
 CPU_TEST_SOURCE_FILES = $(notdir $(wildcard $(CPU_TEST_SOURCE_DIRS:%=%/*.c) $(CPU_TEST_SOURCE_DIRS:%=%/*.cpp)))
 CPU_TEST_O_FILES = $(addsuffix .o,$(basename $(CPU_TEST_SOURCE_FILES)))
 CPU_INCLUDES = $(CPU_TEST_SOURCE_DIRS:%=-I%)
