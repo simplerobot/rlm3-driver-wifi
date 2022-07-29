@@ -1,9 +1,9 @@
 #include "rlm3-wifi.h"
 #include "rlm3-uart.h"
+#include "rlm3-gpio.h"
 #include "rlm3-task.h"
 #include "rlm3-string.h"
 #include "logger.h"
-#include "main.h"
 #include "Assert.h"
 #include <stdarg.h>
 
