@@ -375,8 +375,7 @@ extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size)
 	if (0 >= size || size > 1024)
 		return false;
 	char size_str[5];
-	if (!RLM3_UIntToString(size, size_str, sizeof(size_str)))
-		return false;
+	RLM3_Format(size_str, sizeof(size_str), "%u", (unsigned int)size);
 
 	BeginCommand();
 	Send("transmit_a", "AT+CIPSEND=", size_str, NULL);
