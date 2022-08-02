@@ -86,7 +86,7 @@ $(MCU_TEST_BUILD_DIR)/test.hex : $(MCU_TEST_BUILD_DIR)/test.elf
 	$(MCU_HX) $< $@
 
 $(MCU_TEST_BUILD_DIR)/test.elf : $(MCU_TEST_O_FILES:%=$(MCU_TEST_BUILD_DIR)/%)
-	$(MCU_CC) $(MCU_CFLAGS) $(MCU_TEST_LD_FILE:%=-T%) -Wl,--gc-sections $^ $(MCU_CLIBS) -s -o $@ -Wl,-Map=$@.map,--cref
+	$(MCU_CC) $(MCU_CFLAGS) $(MCU_TEST_LD_FILE:%=-T%) -Wl,--gc-sections $^ $(MCU_CLIBS) -o $@ -Wl,-Map=$@.map,--cref
 	$(MCU_SZ) $@
 
 $(MCU_TEST_BUILD_DIR)/%.o : %.c Makefile | $(MCU_TEST_BUILD_DIR)
