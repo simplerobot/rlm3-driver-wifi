@@ -8,6 +8,9 @@ extern "C" {
 #endif
 
 
+#define RLM3_WIFI_LINK_COUNT (5)
+
+
 extern bool RLM3_WIFI_Init();
 extern void RLM3_WIFI_Deinit();
 extern bool RLM3_WIFI_IsInit();

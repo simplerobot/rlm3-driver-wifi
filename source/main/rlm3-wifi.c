@@ -12,7 +12,6 @@ LOGGER_ZONE(WIFI);
 
 
 #define MAX_SEND_COMMAND_ARGUMENTS (6)
-#define LINK_COUNT (5)
 
 
 typedef enum State
@@ -80,9 +79,9 @@ typedef enum Command
 	COMMAND_BYTES_RECEIVED,
 	COMMAND_DNS_FAIL,
 	COMMAND_CLOSED_BEGIN,
-	COMMAND_CLOSED_END = COMMAND_CLOSED_BEGIN + LINK_COUNT - 1,
+	COMMAND_CLOSED_END = COMMAND_CLOSED_BEGIN + RLM3_WIFI_LINK_COUNT - 1,
 	COMMAND_CONNECT_BEGIN,
-	COMMAND_CONNECT_END = COMMAND_CONNECT_BEGIN + LINK_COUNT - 1,
+	COMMAND_CONNECT_END = COMMAND_CONNECT_BEGIN + RLM3_WIFI_LINK_COUNT - 1,
 	COMMAND_COUNT
 } Command;
 
@@ -97,7 +96,7 @@ static volatile uint32_t g_transmit_count = 0;
 
 static volatile bool g_wifi_connected = false;
 static volatile bool g_wifi_has_ip = false;
-static volatile bool g_tcp_connected[LINK_COUNT] = { 0 };
+static volatile bool g_tcp_connected[RLM3_WIFI_LINK_COUNT] = { 0 };
 static volatile uint32_t g_segment_count = 0;
 
 static uint8_t g_number = 0;
@@ -237,7 +236,7 @@ extern bool RLM3_WIFI_Init()
 	g_expected = NULL;
 	g_wifi_has_ip = false;
 	g_wifi_connected = false;
-	for (size_t i = 0; i < LINK_COUNT; i++)
+	for (size_t i = 0; i < RLM3_WIFI_LINK_COUNT; i++)
 		g_tcp_connected[i] = false;
 	g_segment_count = 0;
 	g_receive_length = 0;
@@ -343,7 +342,7 @@ extern bool RLM3_WIFI_IsNetworkConnected()
 
 extern bool RLM3_WIFI_ServerConnect(size_t link_id, const char* server, const char* service)
 {
-	if (link_id >= LINK_COUNT)
+	if (link_id >= RLM3_WIFI_LINK_COUNT)
 		return false;
 
 	RLM3_WIFI_ServerDisconnect(link_id);
@@ -368,7 +367,7 @@ extern bool RLM3_WIFI_ServerConnect(size_t link_id, const char* server, const ch
 
 extern void RLM3_WIFI_ServerDisconnect(size_t link_id)
 {
-	if (link_id >= LINK_COUNT)
+	if (link_id >= RLM3_WIFI_LINK_COUNT)
 		return;
 
 	BeginCommand();
@@ -392,7 +391,7 @@ extern void RLM3_WIFI_ServerDisconnect(size_t link_id)
 
 extern bool RLM3_WIFI_IsServerConnected(size_t link_id)
 {
-	if (link_id >= LINK_COUNT)
+	if (link_id >= RLM3_WIFI_LINK_COUNT)
 		return false;
 
 	return g_tcp_connected[link_id];
@@ -400,8 +399,9 @@ extern bool RLM3_WIFI_IsServerConnected(size_t link_id)
 
 extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size)
 {
-	if (link_id >= LINK_COUNT)
+	if (link_id >= RLM3_WIFI_LINK_COUNT)
 		return false;
+
 	// We only support small blocks for now.
 	if (0 >= size || size > 1024)
 		return false;
@@ -552,7 +552,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_no_SPACE_ip:
-		if (x == '\r') { next = STATE_END; g_wifi_has_ip = false; for (size_t i = 0; i < LINK_COUNT; i++) g_tcp_connected[i] = false; }
+		if (x == '\r') { next = STATE_END; g_wifi_has_ip = false; for (size_t i = 0; i < RLM3_WIFI_LINK_COUNT; i++) g_tcp_connected[i] = false; }
 		break;
 
 	case STATE_X_OK:
@@ -631,7 +631,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_WIFI_SPACE_DISCONNECT:
-		if (x == '\r') { next = STATE_END; g_wifi_connected = false; g_wifi_has_ip = false; for (size_t i = 0; i < LINK_COUNT; i++) g_tcp_connected[i] = false; NotifyCommand(COMMAND_WIFI_DISCONNECT); }
+		if (x == '\r') { next = STATE_END; g_wifi_connected = false; g_wifi_has_ip = false; for (size_t i = 0; i < RLM3_WIFI_LINK_COUNT; i++) g_tcp_connected[i] = false; NotifyCommand(COMMAND_WIFI_DISCONNECT); }
 		break;
 
 	case STATE_X_WIFI_SPACE_GOT_SPACE_IP:
@@ -654,11 +654,11 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_NN_COMMA_CLOSED:
-		if (x == '\r') { next = STATE_END; if (g_number < LINK_COUNT) { g_tcp_connected[g_number] = false; NotifyCommand((Command)(COMMAND_CLOSED_BEGIN + g_number)); } }
+		if (x == '\r') { next = STATE_END; if (g_number < RLM3_WIFI_LINK_COUNT) { g_tcp_connected[g_number] = false; NotifyCommand((Command)(COMMAND_CLOSED_BEGIN + g_number)); } }
 		break;
 
 	case STATE_X_NN_COMMA_CONNECT:
-		if (x == '\r') { next = STATE_END; if (g_number < LINK_COUNT) { g_tcp_connected[g_number] = true; NotifyCommand((Command)(COMMAND_CONNECT_BEGIN + g_number)); } }
+		if (x == '\r') { next = STATE_END; if (g_number < RLM3_WIFI_LINK_COUNT) { g_tcp_connected[g_number] = true; NotifyCommand((Command)(COMMAND_CONNECT_BEGIN + g_number)); } }
 		break;
 
 	case STATE_X_NN_COMMA_SEND_SPACE_OK:
