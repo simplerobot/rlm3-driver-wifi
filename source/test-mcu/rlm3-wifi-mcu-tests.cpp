@@ -12,7 +12,7 @@ LOGGER_ZONE(TEST);
 static size_t g_recv_count = 0;
 static uint8_t g_recv_buffer[32];
 
-extern void RLM3_WIFI_Receive_Callback(uint8_t data)
+extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
 {
 	if (g_recv_count < sizeof(g_recv_buffer))
 		g_recv_buffer[g_recv_count] = data;
@@ -56,11 +56,11 @@ TEST_CASE(RLM3_WIFI_ServerConnect_HappyCase)
 {
 	ASSERT(RLM3_WIFI_Init());
 	ASSERT(RLM3_WIFI_NetworkConnect("simplerobots", "gKFAED2xrf258vEp"));
-	ASSERT(!RLM3_WIFI_IsServerConnected());
-	ASSERT(RLM3_WIFI_ServerConnect("www.google.com", "80"));
-	ASSERT(RLM3_WIFI_IsServerConnected());
-	RLM3_WIFI_ServerDisconnect();
-	ASSERT(!RLM3_WIFI_IsServerConnected());
+	ASSERT(!RLM3_WIFI_IsServerConnected(2));
+	ASSERT(RLM3_WIFI_ServerConnect(2, "www.google.com", "80"));
+	ASSERT(RLM3_WIFI_IsServerConnected(2));
+	RLM3_WIFI_ServerDisconnect(2);
+	ASSERT(!RLM3_WIFI_IsServerConnected(2));
 	RLM3_WIFI_Deinit();
 }
 
@@ -68,15 +68,15 @@ TEST_CASE(RLM3_WIFI_SendReceive)
 {
 	ASSERT(RLM3_WIFI_Init());
 	ASSERT(RLM3_WIFI_NetworkConnect("simplerobots", "gKFAED2xrf258vEp"));
-	ASSERT(!RLM3_WIFI_IsServerConnected());
-	ASSERT(RLM3_WIFI_ServerConnect("www.google.com", "80"));
-	ASSERT(RLM3_WIFI_IsServerConnected());
+	ASSERT(!RLM3_WIFI_IsServerConnected(2));
+	ASSERT(RLM3_WIFI_ServerConnect(2, "www.google.com", "80"));
+	ASSERT(RLM3_WIFI_IsServerConnected(2));
 	g_recv_count = 0;
 	const char* command = "GET /\r\n";
-	RLM3_WIFI_Transmit((const uint8_t*)command, std::strlen(command));
+	RLM3_WIFI_Transmit(2, (const uint8_t*)command, std::strlen(command));
 	RLM3_Delay(1000);
-	RLM3_WIFI_ServerDisconnect();
-	ASSERT(!RLM3_WIFI_IsServerConnected());
+	RLM3_WIFI_ServerDisconnect(2);
+	ASSERT(!RLM3_WIFI_IsServerConnected(2));
 	RLM3_WIFI_Deinit();
 
 	ASSERT(g_recv_count > 1024);

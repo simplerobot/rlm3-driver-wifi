@@ -18,12 +18,12 @@ extern bool RLM3_WIFI_NetworkConnect(const char* ssid, const char* password);
 extern void RLM3_WIFI_NetworkDisconnect();
 extern bool RLM3_WIFI_IsNetworkConnected();
 
-extern bool RLM3_WIFI_ServerConnect(const char* server, const char* service);
-extern void RLM3_WIFI_ServerDisconnect();
-extern bool RLM3_WIFI_IsServerConnected();
+extern bool RLM3_WIFI_ServerConnect(size_t link_id, const char* server, const char* service);
+extern void RLM3_WIFI_ServerDisconnect(size_t link_id);
+extern bool RLM3_WIFI_IsServerConnected(size_t link_id);
 
-extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size);
-extern void RLM3_WIFI_Receive_Callback(uint8_t data);
+extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size);
+extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data);
 
 
 #ifdef __cplusplus

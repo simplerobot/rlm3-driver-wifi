@@ -11,7 +11,8 @@
 LOGGER_ZONE(WIFI);
 
 
-#define MAX_SEND_COMMAND_ARGUMENTS 5
+#define MAX_SEND_COMMAND_ARGUMENTS (6)
+#define LINK_COUNT (5)
 
 
 typedef enum State
@@ -29,13 +30,14 @@ typedef enum State
 	STATE_X_busy_SPACE,
 	STATE_X_busy_SPACE_p_DOT_DOT_DOT,
 	STATE_X_busy_SPACE_s_DOT_DOT_DOT,
-	STATE_X_C,
-	STATE_X_CLOSED,
-	STATE_X_CONNECT,
 	STATE_X_DNS_SPACE_Fail,
 	STATE_X_ERROR,
 	STATE_X_FAIL,
 	STATE_X_NN,
+	STATE_X_NN_COMMA,
+	STATE_X_NN_COMMA_C,
+	STATE_X_NN_COMMA_CLOSED,
+	STATE_X_NN_COMMA_CONNECT,
 	STATE_X_NN_COMMA_SEND_SPACE_OK,
 	STATE_X_no_SPACE_ip,
 	STATE_X_OK,
@@ -43,6 +45,7 @@ typedef enum State
 	STATE_X_PLUS_C,
 	STATE_X_PLUS_CWJAP_COLON,
 	STATE_X_PLUS_IPD_COMMA_NN,
+	STATE_X_PLUS_IPD_COMMA_NN_COMMA,
 	STATE_X_Recv_SPACE_NN,
 	STATE_X_Recv_SPACE_NN_SPACE_bytes,
 	STATE_X_S,
@@ -56,42 +59,48 @@ typedef enum State
 	STATE_X_WIFI_SPACE_GOT_SPACE_IP,
 } State;
 
+#define FLAG(COMMAND) (1 << (COMMAND))
 
-static const uint32_t COMMAND_OK						= 1 << 0;  // 0x000001
-static const uint32_t COMMAND_ERROR						= 1 << 1;  // 0x000002
-static const uint32_t COMMAND_FAIL						= 1 << 2;  // 0x000004
-static const uint32_t COMMAND_CONNECTION_TIMEOUT		= 1 << 3;  // 0x000008
-static const uint32_t COMMAND_CONNECTION_WRONG_PASSWORD	= 1 << 4;  // 0x000010
-static const uint32_t COMMAND_CONNECTION_MISSING_AP		= 1 << 5;  // 0x000020
-static const uint32_t COMMAND_CONNECTION_FAILED			= 1 << 6;  // 0x000040
-static const uint32_t COMMAND_SEND_OK					= 1 << 7;  // 0x000080
-static const uint32_t COMMAND_SEND_FAIL					= 1 << 8;  // 0x000100
-static const uint32_t COMMAND_GO_AHEAD					= 1 << 9;  // 0x000200
-static const uint32_t COMMAND_ALREADY_CONNECTED			= 1 << 10; // 0x000400
-static const uint32_t COMMAND_WIFI_CONNECTED			= 1 << 11; // 0x000800
-static const uint32_t COMMAND_WIFI_DISCONNECT			= 1 << 12; // 0x001000
-static const uint32_t COMMAND_WIFI_GOT_IP				= 1 << 13; // 0x002000
-static const uint32_t COMMAND_CLOSED					= 1 << 14; // 0x004000
-static const uint32_t COMMAND_CONNECT					= 1 << 15; // 0x008000
-static const uint32_t COMMAND_BYTES_RECEIVED			= 1 << 16; // 0x010000
-static const uint32_t COMMAND_DNS_FAIL					= 1 << 17; // 0x020000
+typedef enum Command
+{
+	COMMAND_OK,
+	COMMAND_ERROR,
+	COMMAND_FAIL,
+	COMMAND_CONNECTION_TIMEOUT,
+	COMMAND_CONNECTION_WRONG_PASSWORD,
+	COMMAND_CONNECTION_MISSING_AP,
+	COMMAND_CONNECTION_FAILED,
+	COMMAND_SEND_OK,
+	COMMAND_SEND_FAIL,
+	COMMAND_GO_AHEAD,
+	COMMAND_ALREADY_CONNECTED,
+	COMMAND_WIFI_CONNECTED,
+	COMMAND_WIFI_DISCONNECT,
+	COMMAND_WIFI_GOT_IP,
+	COMMAND_BYTES_RECEIVED,
+	COMMAND_DNS_FAIL,
+	COMMAND_CLOSED_BEGIN,
+	COMMAND_CLOSED_END = COMMAND_CLOSED_BEGIN + LINK_COUNT - 1,
+	COMMAND_CONNECT_BEGIN,
+	COMMAND_CONNECT_END = COMMAND_CONNECT_BEGIN + LINK_COUNT - 1,
+	COMMAND_COUNT
+} Command;
 
 
 static State g_state = STATE_INITIAL;
 static const char* g_expected = NULL;
 
-
 static volatile RLM3_Task g_client_thread = NULL;
-static volatile uint32_t g_commands = 0;
+static volatile uint32_t g_command_flags = 0;
 static const char* volatile* g_transmit_data = NULL;
 static volatile uint32_t g_transmit_count = 0;
 
 static volatile bool g_wifi_connected = false;
 static volatile bool g_wifi_has_ip = false;
-static volatile bool g_tcp_connected = false;
+static volatile bool g_tcp_connected[LINK_COUNT] = { 0 };
 static volatile uint32_t g_segment_count = 0;
 
-static uint8_t g_sub_version = 0;
+static uint8_t g_number = 0;
 static volatile uint32_t g_at_version = 0;
 static volatile uint32_t g_sdk_version = 0;
 static uint32_t g_receive_length = 0;
@@ -108,7 +117,7 @@ static uint32_t g_error_count = 0;
 static void BeginCommand()
 {
 	ASSERT(g_client_thread == NULL);
-	g_commands = 0;
+	g_command_flags = 0;
 	g_client_thread = RLM3_GetCurrentTask();
 }
 
@@ -117,24 +126,24 @@ static void EndCommand()
 	g_client_thread = NULL;
 }
 
-static bool WaitForResponse(const char* action, uint32_t timeout, uint32_t pass_commands, uint32_t fail_commands)
+static bool WaitForResponse(const char* action, uint32_t timeout, uint32_t pass_command_flags, uint32_t fail_command_flags)
 {
 	RLM3_Time start_time = RLM3_GetCurrentTime();
 
 	// Wait until the server notifies us of one of the monitored commands.
-	uint32_t monitored_commands = pass_commands | fail_commands;
-	while ((g_commands & monitored_commands) == 0 && RLM3_TakeUntil(start_time, timeout))
+	uint32_t monitored_command_flags = pass_command_flags | fail_command_flags;
+	while ((g_command_flags & monitored_command_flags) == 0 && RLM3_TakeUntil(start_time, timeout))
 		;
 
-	if ((g_commands & fail_commands) != 0)
+	if ((g_command_flags & fail_command_flags) != 0)
 	{
-		LOG_WARN("Fail %s %x", action, (int)g_commands);
+		LOG_WARN("Fail %s %x", action, (int)g_command_flags);
 		return false;
 	}
 
-	if ((g_commands & pass_commands) == 0)
+	if ((g_command_flags & pass_command_flags) == 0)
 	{
-		LOG_WARN("Timeout %s %x", action, (int)g_commands);
+		LOG_WARN("Timeout %s %x", action, (int)g_command_flags);
 		return false;
 	}
 
@@ -191,7 +200,7 @@ static bool __attribute__((sentinel)) SendCommandStandard(const char* action, ui
 
 	BeginCommand();
 	SendV(action, args);
-	bool result = WaitForResponse(action, timeout, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+	bool result = WaitForResponse(action, timeout, FLAG(COMMAND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 	EndCommand();
 
 	va_end(args);
@@ -199,14 +208,16 @@ static bool __attribute__((sentinel)) SendCommandStandard(const char* action, ui
 	return result;
 }
 
-static void NotifyCommand(uint32_t command)
+static void NotifyCommand(Command command)
 {
-	g_commands |= command;
+	g_command_flags |= FLAG(command);
 	RLM3_GiveFromISR(g_client_thread);
 }
 
 extern bool RLM3_WIFI_Init()
 {
+	ASSERT(COMMAND_COUNT < 32);
+
 	if (RLM3_UART4_IsInit())
 		RLM3_UART4_Deinit();
 
@@ -226,7 +237,8 @@ extern bool RLM3_WIFI_Init()
 	g_expected = NULL;
 	g_wifi_has_ip = false;
 	g_wifi_connected = false;
-	g_tcp_connected = false;
+	for (size_t i = 0; i < LINK_COUNT; i++)
+		g_tcp_connected[i] = false;
 	g_segment_count = 0;
 	g_receive_length = 0;
 #ifdef TEST
@@ -255,6 +267,8 @@ extern bool RLM3_WIFI_Init()
 		result = SendCommandStandard("manual_connect", 1000, "AT+CWAUTOCONN=0", NULL);
 	if (result)
 		result = SendCommandStandard("transfer_mode", 1000, "AT+CIPMODE=0", NULL);
+	if (result)
+		result = SendCommandStandard("multiple_connections", 1000, "AT+CIPMUX=1", NULL);
 	return result;
 }
 
@@ -294,11 +308,11 @@ extern bool RLM3_WIFI_NetworkConnect(const char* ssid, const char* password)
 	if (result)
 		Send("network_connect_a", "AT+CWJAP_CUR=\"", ssid, "\",\"", password, "\"", NULL);
 	if (result)
-		result = WaitForResponse("network_connect_b", 30000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+		result = WaitForResponse("network_connect_b", 30000, FLAG(COMMAND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 	if (result)
-		result = WaitForResponse("network_connect_c", 30000, COMMAND_WIFI_CONNECTED, COMMAND_CONNECTION_TIMEOUT | COMMAND_CONNECTION_WRONG_PASSWORD | COMMAND_CONNECTION_MISSING_AP | COMMAND_CONNECTION_FAILED | COMMAND_ALREADY_CONNECTED | COMMAND_WIFI_DISCONNECT);
+		result = WaitForResponse("network_connect_c", 30000, FLAG(COMMAND_WIFI_CONNECTED), FLAG(COMMAND_CONNECTION_TIMEOUT) | FLAG(COMMAND_CONNECTION_WRONG_PASSWORD) | FLAG(COMMAND_CONNECTION_MISSING_AP) | FLAG(COMMAND_CONNECTION_FAILED) | FLAG(COMMAND_ALREADY_CONNECTED) | FLAG(COMMAND_WIFI_DISCONNECT));
 	if (result)
-		result = WaitForResponse("network_connect_d", 30000, COMMAND_WIFI_GOT_IP, COMMAND_CONNECTION_TIMEOUT | COMMAND_CONNECTION_WRONG_PASSWORD | COMMAND_CONNECTION_MISSING_AP | COMMAND_CONNECTION_FAILED | COMMAND_ALREADY_CONNECTED | COMMAND_WIFI_DISCONNECT);
+		result = WaitForResponse("network_connect_d", 30000, FLAG(COMMAND_WIFI_GOT_IP), FLAG(COMMAND_CONNECTION_TIMEOUT) | FLAG(COMMAND_CONNECTION_WRONG_PASSWORD) | FLAG(COMMAND_CONNECTION_MISSING_AP) | FLAG(COMMAND_CONNECTION_FAILED) | FLAG(COMMAND_ALREADY_CONNECTED) | FLAG(COMMAND_WIFI_DISCONNECT));
 	EndCommand();
 
 	return result;
@@ -314,9 +328,9 @@ extern void RLM3_WIFI_NetworkDisconnect()
 		if (result)
 			Send("network_disconnect_a", "AT+CWQAP", NULL);
 		if (result)
-			result = WaitForResponse("network_disconnect_b", 1000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+			result = WaitForResponse("network_disconnect_b", 1000, FLAG(COMMAND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 		if (result)
-			WaitForResponse("network_disconnect_c", 1000, COMMAND_WIFI_DISCONNECT, 0);
+			WaitForResponse("network_disconnect_c", 1000, FLAG(COMMAND_WIFI_DISCONNECT), 0);
 	}
 
 	EndCommand();
@@ -327,70 +341,90 @@ extern bool RLM3_WIFI_IsNetworkConnected()
 	return g_wifi_connected && g_wifi_has_ip;
 }
 
-extern bool RLM3_WIFI_ServerConnect(const char* server, const char* service)
+extern bool RLM3_WIFI_ServerConnect(size_t link_id, const char* server, const char* service)
 {
-	RLM3_WIFI_ServerDisconnect();
+	if (link_id >= LINK_COUNT)
+		return false;
+
+	RLM3_WIFI_ServerDisconnect(link_id);
 
 	BeginCommand();
 
+	char link_id_str[2] = { 0 };
+	link_id_str[0] = '0' + link_id;
+
 	bool result = true;
 	if (result)
-		Send("tcp_connect_a", "AT+CIPSTART=\"TCP\",\"", server, "\",", service, NULL);
+		Send("tcp_connect_a", "AT+CIPSTART=", link_id_str ,",\"TCP\",\"", server, "\",", service, NULL);
 	if (result)
-		result = WaitForResponse("tcp_connect_b", 30000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+		result = WaitForResponse("tcp_connect_b", 30000, FLAG(COMMAND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 	if (result)
-		result = WaitForResponse("tcp_connect_c", 30000, COMMAND_CONNECT, COMMAND_CONNECTION_TIMEOUT | COMMAND_CONNECTION_WRONG_PASSWORD | COMMAND_CONNECTION_MISSING_AP | COMMAND_CONNECTION_FAILED | COMMAND_WIFI_DISCONNECT | COMMAND_CLOSED | COMMAND_DNS_FAIL);
+		result = WaitForResponse("tcp_connect_c", 30000, FLAG(COMMAND_CONNECT_BEGIN + link_id), FLAG(COMMAND_CONNECTION_TIMEOUT) | FLAG(COMMAND_CONNECTION_WRONG_PASSWORD) | FLAG(COMMAND_CONNECTION_MISSING_AP) | FLAG(COMMAND_CONNECTION_FAILED) | FLAG(COMMAND_WIFI_DISCONNECT) | FLAG(COMMAND_CLOSED_BEGIN + link_id) | FLAG(COMMAND_DNS_FAIL));
 
 	EndCommand();
 
 	return result;
 }
 
-extern void RLM3_WIFI_ServerDisconnect()
+extern void RLM3_WIFI_ServerDisconnect(size_t link_id)
 {
+	if (link_id >= LINK_COUNT)
+		return;
+
 	BeginCommand();
 
-	if (g_tcp_connected)
+	if (g_tcp_connected[link_id])
 	{
+		char link_id_str[2] = { 0 };
+		link_id_str[0] = '0' + link_id;
+
 		bool result = true;
 		if (result)
-			Send("tcp_disconnect_a", "AT+CIPCLOSE", NULL);
+			Send("tcp_disconnect_a", "AT+CIPCLOSE=", link_id_str, NULL);
 		if (result)
-			result = WaitForResponse("tcp_disconnect_b", 1000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+			result = WaitForResponse("tcp_disconnect_b", 1000, FLAG(COMMAND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 		if (result)
-			result = WaitForResponse("tcp_disconnect_c", 1000, COMMAND_CLOSED, 0);
+			result = WaitForResponse("tcp_disconnect_c", 1000, FLAG(COMMAND_CLOSED_BEGIN + link_id), 0);
 	}
 
 	EndCommand();
 }
 
-extern bool RLM3_WIFI_IsServerConnected()
+extern bool RLM3_WIFI_IsServerConnected(size_t link_id)
 {
-	return g_tcp_connected;
+	if (link_id >= LINK_COUNT)
+		return false;
+
+	return g_tcp_connected[link_id];
 }
 
-extern bool RLM3_WIFI_Transmit(const uint8_t* data, size_t size)
+extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size)
 {
+	if (link_id >= LINK_COUNT)
+		return false;
 	// We only support small blocks for now.
 	if (0 >= size || size > 1024)
 		return false;
 	char size_str[5];
 	RLM3_Format(size_str, sizeof(size_str), "%u", (unsigned int)size);
+	char link_id_str[2] = { 0 };
+	link_id_str[0] = '0' + link_id;
+
 
 	BeginCommand();
-	Send("transmit_a", "AT+CIPSEND=", size_str, NULL);
+	Send("transmit_a", "AT+CIPSEND=", link_id_str, ",", size_str, NULL);
 
 	bool result = true;
 	if (result)
-		result = WaitForResponse("transmit_b", 10000, COMMAND_OK, COMMAND_ERROR | COMMAND_FAIL);
+		result = WaitForResponse("transmit_b", 10000, FLAG(COMMAND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 	if (result)
-		result = WaitForResponse("transmit_c", 10000, COMMAND_GO_AHEAD, COMMAND_ERROR | COMMAND_FAIL);
+		result = WaitForResponse("transmit_c", 10000, FLAG(COMMAND_GO_AHEAD), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 	if (result)
 		SendRaw(data, size);
 	if (result)
-		result = WaitForResponse("transmit_d", 10000, COMMAND_BYTES_RECEIVED, COMMAND_ERROR | COMMAND_FAIL);
+		result = WaitForResponse("transmit_d", 10000, FLAG(COMMAND_BYTES_RECEIVED), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 	if (result)
-		result = WaitForResponse("transmit_e", 10000, COMMAND_SEND_OK, COMMAND_ERROR | COMMAND_FAIL | COMMAND_SEND_FAIL);
+		result = WaitForResponse("transmit_e", 10000, FLAG(COMMAND_SEND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL) | FLAG(COMMAND_SEND_FAIL));
 	EndCommand();
 
 	return result;
@@ -437,7 +471,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_READ_DATA:
-		RLM3_WIFI_Receive_Callback(x);
+		RLM3_WIFI_Receive_Callback(g_number, x);
 		next = STATE_READ_DATA;
 		if (--g_receive_length == 0)
 			next = STATE_INITIAL;
@@ -451,7 +485,6 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		if (x == 'B') { next = STATE_END; g_expected = "in version"; }
 		if (x == 'b') { next = STATE_X_busy_SPACE; g_expected = "usy "; }
 		if (x == 'c') { next = STATE_END; g_expected = "ompile time"; }
-		if (x == 'C') { next = STATE_X_C; }
 		if (x == 'D') { next = STATE_X_DNS_SPACE_Fail; g_expected = "NS Fail"; }
 		if (x == 'E') { next = STATE_X_ERROR; g_expected = "RROR"; }
 		if (x == 'F') { next = STATE_X_FAIL; g_expected = "AIL"; }
@@ -460,11 +493,11 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		if (x == 'R') { next = STATE_X_Recv_SPACE_NN; g_expected = "ecv "; }
 		if (x == 'S') { next = STATE_X_S; }
 		if (x == 'W') { next = STATE_X_WIFI_SPACE; g_expected = "IFI "; }
-		if (x >= '0' && x <= '9') { next = STATE_X_NN; }
+		if (x >= '0' && x <= '9') { next = STATE_X_NN; g_number = x - '0'; }
 		break;
 
 	case STATE_X_PLUS:
-		if (x == 'I') { next = STATE_X_PLUS_IPD_COMMA_NN; g_expected = "PD,"; g_receive_length = 0; }
+		if (x == 'I') { next = STATE_X_PLUS_IPD_COMMA_NN; g_expected = "PD,"; g_number = 0; g_receive_length = 0; }
 		if (x == 'C') { next = STATE_X_PLUS_C; }
 		break;
 
@@ -476,15 +509,15 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 
 	case STATE_X_AT:
 		next = STATE_END;
-		if (x == ' ') { next = STATE_X_AT_SPACE_version_COLON_NN; g_expected = "version:"; g_at_version = 0; g_sub_version = 0; }
+		if (x == ' ') { next = STATE_X_AT_SPACE_version_COLON_NN; g_expected = "version:"; g_at_version = 0; g_number = 0; }
 		break;
 
 	case STATE_X_AT_SPACE_version_COLON_NN:
-		if (x >= '0' && x <= '9') { next = STATE_X_AT_SPACE_version_COLON_NN; g_sub_version = 10 * g_sub_version + x - '0'; }
+		if (x >= '0' && x <= '9') { next = STATE_X_AT_SPACE_version_COLON_NN; g_number = 10 * g_number + x - '0'; }
 		if (x == 'v') { next = STATE_X_AT_SPACE_version_COLON_NN; }
 		if (x == '.') { next = STATE_X_AT_SPACE_version_COLON_NN; }
 		if (x == '(' || x == '-' || x == '\r') { next = STATE_END; }
-		if (x == '.' || x == '(' || x == '-' || x == '\r') { g_at_version = (g_at_version << 8) | g_sub_version; g_sub_version = 0; }
+		if (x == '.' || x == '(' || x == '-' || x == '\r') { g_at_version = (g_at_version << 8) | g_number; g_number = 0; }
 		break;
 
 	case STATE_X_ALREADY_SPACE_CONNECT:
@@ -506,19 +539,6 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		if (x == '\r') { next = STATE_END; }
 		break;
 
-	case STATE_X_C:
-		if (x == 'L') { next = STATE_X_CLOSED; g_expected = "OSED"; }
-		if (x == 'O') { next = STATE_X_CONNECT; g_expected = "NNECT"; }
-		break;
-
-	case STATE_X_CLOSED:
-		if (x == '\r') { next = STATE_END; g_tcp_connected = false; NotifyCommand(COMMAND_CLOSED); }
-		break;
-
-	case STATE_X_CONNECT:
-		if (x == '\r') { next = STATE_END; g_tcp_connected = true; NotifyCommand(COMMAND_CONNECT); }
-		break;
-
 	case STATE_X_DNS_SPACE_Fail:
 		if (x == '\r') { next = STATE_END; NotifyCommand(COMMAND_DNS_FAIL); }
 		break;
@@ -532,7 +552,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_no_SPACE_ip:
-		if (x == '\r') { next = STATE_END; g_wifi_has_ip = false; g_tcp_connected = false; }
+		if (x == '\r') { next = STATE_END; g_wifi_has_ip = false; for (size_t i = 0; i < LINK_COUNT; i++) g_tcp_connected[i] = false; }
 		break;
 
 	case STATE_X_OK:
@@ -550,7 +570,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 
 	case STATE_X_S:
 		if (x == 'E') { next = STATE_X_SEND_SPACE; g_expected = "ND "; }
-		if (x == 'D') { next = STATE_X_SDK_SPACE_version_COLON_NN; g_expected = "K version:"; g_sdk_version = 0; g_sub_version = 0; }
+		if (x == 'D') { next = STATE_X_SDK_SPACE_version_COLON_NN; g_expected = "K version:"; g_sdk_version = 0; g_number = 0; }
 		if (x == 'T') { next = STATE_END; g_expected = "ATUS:"; }
 		break;
 
@@ -568,16 +588,21 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_SDK_SPACE_version_COLON_NN:
-		if (x >= '0' && x <= '9') { next = STATE_X_SDK_SPACE_version_COLON_NN; g_sub_version = 10 * g_sub_version + x - '0'; }
+		if (x >= '0' && x <= '9') { next = STATE_X_SDK_SPACE_version_COLON_NN; g_number = 10 * g_number + x - '0'; }
 		if (x == 'v') { next = STATE_X_SDK_SPACE_version_COLON_NN; }
 		if (x == '.') { next = STATE_X_SDK_SPACE_version_COLON_NN; }
 		if (x == '(' || x == '-') { next = STATE_END; }
 		if (x == '\r') { next = STATE_END; }
-		if (x == '.' || x == '(' || x == '-' || x == '\r') { g_sdk_version = (g_sdk_version << 8) | g_sub_version; g_sub_version = 0; }
+		if (x == '.' || x == '(' || x == '-' || x == '\r') { g_sdk_version = (g_sdk_version << 8) | g_number; g_number = 0; }
 		break;
 
 	case STATE_X_PLUS_IPD_COMMA_NN:
-		if (x >= '0' && x <= '9') { next = STATE_X_PLUS_IPD_COMMA_NN; g_receive_length = 10 * g_receive_length + x - '0'; }
+		if (x >= '0' && x <= '9') { next = STATE_X_PLUS_IPD_COMMA_NN; g_number = 10 * g_number + x - '0'; }
+		if (x == ',') { next = STATE_X_PLUS_IPD_COMMA_NN_COMMA; }
+		break;
+
+	case STATE_X_PLUS_IPD_COMMA_NN_COMMA:
+		if (x >= '0' && x <= '9') { next = STATE_X_PLUS_IPD_COMMA_NN_COMMA; g_receive_length = 10 * g_receive_length + x - '0'; }
 		if (x == ':') { next = STATE_READ_DATA; }
 		break;
 
@@ -606,7 +631,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_WIFI_SPACE_DISCONNECT:
-		if (x == '\r') { next = STATE_END; g_wifi_connected = false; g_wifi_has_ip = false; g_tcp_connected = false; NotifyCommand(COMMAND_WIFI_DISCONNECT); }
+		if (x == '\r') { next = STATE_END; g_wifi_connected = false; g_wifi_has_ip = false; for (size_t i = 0; i < LINK_COUNT; i++) g_tcp_connected[i] = false; NotifyCommand(COMMAND_WIFI_DISCONNECT); }
 		break;
 
 	case STATE_X_WIFI_SPACE_GOT_SPACE_IP:
@@ -614,8 +639,26 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_NN:
-		if (x >= '0' && x <= '9') { next = STATE_X_NN; }
-		if (x == ',') { next = STATE_X_NN_COMMA_SEND_SPACE_OK; g_expected = "SEND OK"; }
+		if (x >= '0' && x <= '9') { next = STATE_X_NN; g_number = 10 * g_number + x - '0'; }
+		if (x == ',') { next = STATE_X_NN_COMMA; }
+		break;
+
+	case STATE_X_NN_COMMA:
+		if (x == 'C') { next = STATE_X_NN_COMMA_C; }
+		if (x == 'S') { next = STATE_X_NN_COMMA_SEND_SPACE_OK; g_expected = "END OK"; }
+		break;
+
+	case STATE_X_NN_COMMA_C:
+		if (x == 'L') { next = STATE_X_NN_COMMA_CLOSED; g_expected = "OSED"; }
+		if (x == 'O') { next = STATE_X_NN_COMMA_CONNECT; g_expected = "NNECT"; }
+		break;
+
+	case STATE_X_NN_COMMA_CLOSED:
+		if (x == '\r') { next = STATE_END; if (g_number < LINK_COUNT) { g_tcp_connected[g_number] = false; NotifyCommand((Command)(COMMAND_CLOSED_BEGIN + g_number)); } }
+		break;
+
+	case STATE_X_NN_COMMA_CONNECT:
+		if (x == '\r') { next = STATE_END; if (g_number < LINK_COUNT) { g_tcp_connected[g_number] = true; NotifyCommand((Command)(COMMAND_CONNECT_BEGIN + g_number)); } }
 		break;
 
 	case STATE_X_NN_COMMA_SEND_SPACE_OK:
@@ -666,7 +709,7 @@ extern bool RLM3_UART4_TransmitCallback(uint8_t* data_to_send)
 		if (--g_transmit_count == 0)
 		{
 			g_transmit_data = NULL;
-			NotifyCommand(0);
+			RLM3_GiveFromISR(g_client_thread);
 		}
 	}
 	else
@@ -675,7 +718,7 @@ extern bool RLM3_UART4_TransmitCallback(uint8_t* data_to_send)
 		if (**g_transmit_data == 0 && *(++g_transmit_data) == NULL)
 		{
 			g_transmit_data = NULL;
-			NotifyCommand(0);
+			RLM3_GiveFromISR(g_client_thread);
 		}
 	}
 
@@ -684,13 +727,14 @@ extern bool RLM3_UART4_TransmitCallback(uint8_t* data_to_send)
 
 extern void RLM3_UART4_ErrorCallback(uint32_t status_flags)
 {
+	LOG_WARN("UART Error %x", (int)status_flags);
+	g_state = STATE_INVALID;
 #ifdef TEST
-//	LOG_ERROR("UART Error %x", (int)status_flags);
 	g_error_count++;
 #endif
 }
 
-extern __attribute__((weak)) void RLM3_WIFI_Receive_Callback(uint8_t data)
+extern __attribute__((weak)) void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
 {
 	// DO NOT MODIFIY THIS FUNCTION.  Override it by declaring a non-weak version in your project files.
 }
