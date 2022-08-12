@@ -9,8 +9,10 @@
 LOGGER_ZONE(TEST);
 
 
-static size_t g_recv_count = 0;
+static volatile size_t g_recv_count = 0;
 static uint8_t g_recv_buffer[32];
+static const size_t k_no_network = (size_t)-1;
+static volatile size_t g_local_network = k_no_network;
 
 extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
 {
@@ -18,6 +20,19 @@ extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
 		g_recv_buffer[g_recv_count] = data;
 	g_recv_count++;
 }
+
+extern void RLM3_WIFI_LocalNetworkConnect_Callback(size_t link_id)
+{
+	ASSERT(g_local_network == k_no_network);
+	g_local_network = link_id;
+}
+
+extern void RLM3_WIFI_LocalNetworkDisconnect_Callback(size_t link_id)
+{
+	ASSERT(link_id == g_local_network);
+	g_local_network = k_no_network;
+}
+
 
 TEST_CASE(RLM3_WIFI_Lifecycle)
 {
@@ -81,6 +96,17 @@ TEST_CASE(RLM3_WIFI_SendReceive)
 
 	ASSERT(g_recv_count > 1024);
 	ASSERT(std::strncmp((char*)g_recv_buffer, "HTTP/1.0 200 OK", 15) == 0);
+}
+
+TEST_CASE(RLM3_WIFI_LocalServer_HappyCase)
+{
+	ASSERT(RLM3_WIFI_Init());
+	ASSERT(!RLM3_WIFI_IsLocalNetworkEnabled());
+	ASSERT(RLM3_WIFI_LocalNetworkEnable("SimpleRobots1234", "2o70jQcB", 2, "192.168.1.1", "80"));
+	ASSERT(RLM3_WIFI_IsLocalNetworkEnabled());
+	RLM3_WIFI_LocalNetworkDisable();
+	ASSERT(!RLM3_WIFI_IsLocalNetworkEnabled());
+	RLM3_WIFI_Deinit();
 }
 
 TEST_SETUP(WIFI_LOGGING)

@@ -11,7 +11,7 @@
 LOGGER_ZONE(WIFI);
 
 
-#define MAX_SEND_COMMAND_ARGUMENTS (6)
+#define MAX_SEND_COMMAND_ARGUMENTS (7)
 
 
 typedef enum State
@@ -92,10 +92,13 @@ static const char* g_expected = NULL;
 static volatile RLM3_Task g_client_thread = NULL;
 static volatile uint32_t g_command_flags = 0;
 static const char* volatile* g_transmit_data = NULL;
-static volatile uint32_t g_transmit_count = 0;
+static volatile uint32_t g_raw_transmit_count = 0;
+
+static bool g_is_local_network_enabled = false;
 
 static volatile bool g_wifi_connected = false;
 static volatile bool g_wifi_has_ip = false;
+static volatile bool g_is_tcp_outgoing[RLM3_WIFI_LINK_COUNT] = { 0 };
 static volatile bool g_tcp_connected[RLM3_WIFI_LINK_COUNT] = { 0 };
 static volatile uint32_t g_segment_count = 0;
 
@@ -153,7 +156,7 @@ static void SendRaw(const uint8_t* buffer, size_t size)
 {
 	if (size == 0)
 		return;
-	g_transmit_count = size;
+	g_raw_transmit_count = size;
 	const char* data = (const char*)buffer;
 	g_transmit_data = &data;
 	RLM3_UART4_EnsureTransmit();
@@ -177,7 +180,7 @@ static void SendV(const char* action, va_list args)
 	command_data[command_count++] = "\r\n";
 	command_data[command_count++] = NULL;
 
-	g_transmit_count = 0;
+	g_raw_transmit_count = 0;
 	g_transmit_data = command_data;
 	RLM3_UART4_EnsureTransmit();
 	while (g_transmit_data != NULL)
@@ -237,9 +240,15 @@ extern bool RLM3_WIFI_Init()
 	g_wifi_has_ip = false;
 	g_wifi_connected = false;
 	for (size_t i = 0; i < RLM3_WIFI_LINK_COUNT; i++)
+	{
+		g_is_tcp_outgoing[i] = false;
 		g_tcp_connected[i] = false;
+	}
 	g_segment_count = 0;
 	g_receive_length = 0;
+	g_client_thread = NULL;
+	g_is_local_network_enabled = false;
+
 #ifdef TEST
 	g_invalid_buffer_length = 0;
 	g_last_valid_state = STATE_INVALID;
@@ -263,11 +272,14 @@ extern bool RLM3_WIFI_Init()
 	if (result)
 		result = SendCommandStandard("disable_echo", 1000, "ATE0", NULL);
 	if (result)
-		result = SendCommandStandard("manual_connect", 1000, "AT+CWAUTOCONN=0", NULL);
-	if (result)
 		result = SendCommandStandard("transfer_mode", 1000, "AT+CIPMODE=0", NULL);
 	if (result)
 		result = SendCommandStandard("multiple_connections", 1000, "AT+CIPMUX=1", NULL);
+	if (result)
+		result = SendCommandStandard("wifi_mode", 1000, "AT+CWMODE_CUR=1", NULL);
+	if (result)
+		result = SendCommandStandard("manual_connect", 1000, "AT+CWAUTOCONN=0", NULL);
+
 	return result;
 }
 
@@ -299,6 +311,8 @@ extern bool RLM3_WIFI_GetVersion(uint32_t* at_version, uint32_t* sdk_version)
 
 extern bool RLM3_WIFI_NetworkConnect(const char* ssid, const char* password)
 {
+	ASSERT(RLM3_WIFI_IsInit());
+
 	RLM3_WIFI_NetworkDisconnect();
 
 	BeginCommand();
@@ -329,7 +343,7 @@ extern void RLM3_WIFI_NetworkDisconnect()
 		if (result)
 			result = WaitForResponse("network_disconnect_b", 1000, FLAG(COMMAND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 		if (result)
-			WaitForResponse("network_disconnect_c", 1000, FLAG(COMMAND_WIFI_DISCONNECT), 0);
+			WaitForResponse("network_disconnect_c", 10000, FLAG(COMMAND_WIFI_DISCONNECT), 0);
 	}
 
 	EndCommand();
@@ -351,6 +365,8 @@ extern bool RLM3_WIFI_ServerConnect(size_t link_id, const char* server, const ch
 
 	char link_id_str[2] = { 0 };
 	link_id_str[0] = '0' + link_id;
+
+	g_is_tcp_outgoing[link_id] = true;
 
 	bool result = true;
 	if (result)
@@ -397,6 +413,46 @@ extern bool RLM3_WIFI_IsServerConnected(size_t link_id)
 	return g_tcp_connected[link_id];
 }
 
+extern bool RLM3_WIFI_LocalNetworkEnable(const char* ssid, const char* password, size_t max_clients, const char* ip_address, const char* service)
+{
+	if (max_clients > RLM3_WIFI_LINK_COUNT)
+		max_clients = RLM3_WIFI_LINK_COUNT;
+	char max_clients_str[2];
+	RLM3_Format(max_clients_str, sizeof(max_clients_str), "%u", (unsigned int)max_clients);
+
+	bool result = true;
+
+	if (result)
+		result = SendCommandStandard("wifi_mode", 1000, "AT+CWMODE_CUR=3", NULL);
+	if (result)
+		result = SendCommandStandard("ap_ip", 1000, "AT+CIPAP_CUR=\"", ip_address, "\"", NULL);
+	if (result)
+		result = SendCommandStandard("ap_set", 1000, "AT+CWSAP_CUR=\"", ssid, "\",\"", password, "\",1,3,", max_clients_str, ",0", NULL); // Channel 1, Encryption using WPA2_PSK, SSID broadcast
+	if (result)
+		result = SendCommandStandard("server", 1000, "AT+CIPSERVER=1,", service, NULL);
+
+	g_is_local_network_enabled = result;
+
+	return result;
+}
+
+extern void RLM3_WIFI_LocalNetworkDisable()
+{
+	bool result = true;
+
+	if (result)
+		result = SendCommandStandard("server", 1000, "AT+CIPSERVER=0", NULL);
+	if (result)
+		result = SendCommandStandard("wifi_mode", 1000, "AT+CWMODE_CUR=1", NULL);
+
+	g_is_local_network_enabled = false;
+}
+
+extern bool RLM3_WIFI_IsLocalNetworkEnabled()
+{
+	return g_is_local_network_enabled;
+}
+
 extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size)
 {
 	if (link_id >= RLM3_WIFI_LINK_COUNT)
@@ -409,7 +465,6 @@ extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size)
 	RLM3_Format(size_str, sizeof(size_str), "%u", (unsigned int)size);
 	char link_id_str[2] = { 0 };
 	link_id_str[0] = '0' + link_id;
-
 
 	BeginCommand();
 	Send("transmit_a", "AT+CIPSEND=", link_id_str, ",", size_str, NULL);
@@ -654,11 +709,11 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_NN_COMMA_CLOSED:
-		if (x == '\r') { next = STATE_END; if (g_number < RLM3_WIFI_LINK_COUNT) { g_tcp_connected[g_number] = false; NotifyCommand((Command)(COMMAND_CLOSED_BEGIN + g_number)); } }
+		if (x == '\r') { next = STATE_END; if (g_number < RLM3_WIFI_LINK_COUNT) { g_tcp_connected[g_number] = false; NotifyCommand((Command)(COMMAND_CLOSED_BEGIN + g_number)); if (!g_is_tcp_outgoing[g_number]) RLM3_WIFI_LocalNetworkDisconnect_Callback(g_number); g_is_tcp_outgoing[g_number] = false; } }
 		break;
 
 	case STATE_X_NN_COMMA_CONNECT:
-		if (x == '\r') { next = STATE_END; if (g_number < RLM3_WIFI_LINK_COUNT) { g_tcp_connected[g_number] = true; NotifyCommand((Command)(COMMAND_CONNECT_BEGIN + g_number)); } }
+		if (x == '\r') { next = STATE_END; if (g_number < RLM3_WIFI_LINK_COUNT) { g_tcp_connected[g_number] = true; NotifyCommand((Command)(COMMAND_CONNECT_BEGIN + g_number)); if (!g_is_tcp_outgoing[g_number]) RLM3_WIFI_LocalNetworkConnect_Callback(g_number); } }
 		break;
 
 	case STATE_X_NN_COMMA_SEND_SPACE_OK:
@@ -703,10 +758,10 @@ extern bool RLM3_UART4_TransmitCallback(uint8_t* data_to_send)
 		RLM3_DebugOutputFromISR(x);
 
 	// If this is binary data, we only have one buffer and we are done when it is sent.
-	if (g_transmit_count > 0)
+	if (g_raw_transmit_count > 0)
 	{
 		// Move onto the next byte.
-		if (--g_transmit_count == 0)
+		if (--g_raw_transmit_count == 0)
 		{
 			g_transmit_data = NULL;
 			RLM3_GiveFromISR(g_client_thread);
@@ -735,6 +790,16 @@ extern void RLM3_UART4_ErrorCallback(uint32_t status_flags)
 }
 
 extern __attribute__((weak)) void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
+{
+	// DO NOT MODIFIY THIS FUNCTION.  Override it by declaring a non-weak version in your project files.
+}
+
+extern __attribute__((weak)) void RLM3_WIFI_LocalNetworkConnect_Callback(size_t link_id)
+{
+	// DO NOT MODIFIY THIS FUNCTION.  Override it by declaring a non-weak version in your project files.
+}
+
+extern __attribute__((weak)) void RLM3_WIFI_LocalNetworkDisconnect_Callback(size_t link_id)
 {
 	// DO NOT MODIFIY THIS FUNCTION.  Override it by declaring a non-weak version in your project files.
 }

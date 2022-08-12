@@ -11,9 +11,13 @@
 #include "rlm3-base.h"
 
 
-RLM3_Task g_client_thread = nullptr;
-size_t g_recv_buffer_size = 0;
-uint8_t g_recv_buffer_data[32];
+volatile RLM3_Task g_client_thread = nullptr;
+volatile size_t g_recv_buffer_size = 0;
+volatile uint8_t g_recv_buffer_data[32];
+
+std::vector<size_t> g_local_network_connect_calls;
+std::vector<size_t> g_local_network_disconnect_calls;
+
 
 extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
 {
@@ -21,6 +25,18 @@ extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
 	if (g_recv_buffer_size < sizeof(g_recv_buffer_data))
 		g_recv_buffer_data[g_recv_buffer_size] = data;
 	g_recv_buffer_size++;
+	RLM3_GiveFromISR(g_client_thread);
+}
+
+extern void RLM3_WIFI_LocalNetworkConnect_Callback(size_t link_id)
+{
+	g_local_network_connect_calls.push_back(link_id);
+	RLM3_GiveFromISR(g_client_thread);
+}
+
+extern void RLM3_WIFI_LocalNetworkDisconnect_Callback(size_t link_id)
+{
+	g_local_network_disconnect_calls.push_back(link_id);
 	RLM3_GiveFromISR(g_client_thread);
 }
 
@@ -35,11 +51,13 @@ static void ExpectInit()
 	SIM_RLM3_UART4_Receive("AT\r\nOK\r\n");
 	SIM_RLM3_UART4_Transmit("ATE0\r\n");
 	SIM_RLM3_UART4_Receive("ATE0\r\nOK\r\n");
-	SIM_RLM3_UART4_Transmit("AT+CWAUTOCONN=0\r\n");
-	SIM_RLM3_UART4_Receive("OK\r\n");
 	SIM_RLM3_UART4_Transmit("AT+CIPMODE=0\r\n");
 	SIM_RLM3_UART4_Receive("OK\r\n");
 	SIM_RLM3_UART4_Transmit("AT+CIPMUX=1\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CWMODE_CUR=1\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CWAUTOCONN=0\r\n");
 	SIM_RLM3_UART4_Receive("OK\r\n");
 }
 
@@ -95,43 +113,61 @@ TEST_CASE(RLM3_WIFI_Init_EchoFailure)
 	ASSERT(!RLM3_WIFI_Init());
 }
 
+TEST_CASE(RLM3_WIFI_Init_SetTransmissionModeFailure)
+{
+	SIM_RLM3_UART4_Transmit("AT\r\n");
+	SIM_RLM3_UART4_Receive("AT\r\nOK\r\n");
+	SIM_RLM3_UART4_Transmit("ATE0\r\n");
+	SIM_RLM3_UART4_Receive("ATE0\r\nOK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPMODE=0\r\n");
+	SIM_RLM3_UART4_Receive("FAIL\r\n");
+
+	ASSERT(!RLM3_WIFI_Init());
+}
+
+TEST_CASE(RLM3_WIFI_Init_SetMultipleConnectionsFailure)
+{
+	SIM_RLM3_UART4_Transmit("AT\r\n");
+	SIM_RLM3_UART4_Receive("AT\r\nOK\r\n");
+	SIM_RLM3_UART4_Transmit("ATE0\r\n");
+	SIM_RLM3_UART4_Receive("ATE0\r\nOK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPMODE=0\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPMUX=1\r\n");
+	SIM_RLM3_UART4_Receive("FAIL\r\n");
+
+	ASSERT(!RLM3_WIFI_Init());
+}
+
+TEST_CASE(RLM3_WIFI_Init_SetAutoconnectFailure)
+{
+	SIM_RLM3_UART4_Transmit("AT\r\n");
+	SIM_RLM3_UART4_Receive("AT\r\nOK\r\n");
+	SIM_RLM3_UART4_Transmit("ATE0\r\n");
+	SIM_RLM3_UART4_Receive("ATE0\r\nOK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPMODE=0\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPMUX=1\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CWMODE_CUR=1\r\n");
+	SIM_RLM3_UART4_Receive("FAIL\r\n");
+
+	ASSERT(!RLM3_WIFI_Init());
+}
+
 TEST_CASE(RLM3_WIFI_Init_ManualConnectFailure)
 {
 	SIM_RLM3_UART4_Transmit("AT\r\n");
 	SIM_RLM3_UART4_Receive("AT\r\nOK\r\n");
 	SIM_RLM3_UART4_Transmit("ATE0\r\n");
 	SIM_RLM3_UART4_Receive("ATE0\r\nOK\r\n");
-	SIM_RLM3_UART4_Transmit("AT+CWAUTOCONN=0\r\n");
-	SIM_RLM3_UART4_Receive("FAIL\r\n");
-
-	ASSERT(!RLM3_WIFI_Init());
-}
-
-TEST_CASE(RLM3_WIFI_Init_TransferModeFailure)
-{
-	SIM_RLM3_UART4_Transmit("AT\r\n");
-	SIM_RLM3_UART4_Receive("AT\r\nOK\r\n");
-	SIM_RLM3_UART4_Transmit("ATE0\r\n");
-	SIM_RLM3_UART4_Receive("ATE0\r\nOK\r\n");
-	SIM_RLM3_UART4_Transmit("AT+CWAUTOCONN=0\r\n");
-	SIM_RLM3_UART4_Receive("OK\r\n");
-	SIM_RLM3_UART4_Transmit("AT+CIPMODE=0\r\n");
-	SIM_RLM3_UART4_Receive("FAIL\r\n");
-
-	ASSERT(!RLM3_WIFI_Init());
-}
-
-TEST_CASE(RLM3_WIFI_Init_MultipleConnectionsFailure)
-{
-	SIM_RLM3_UART4_Transmit("AT\r\n");
-	SIM_RLM3_UART4_Receive("AT\r\nOK\r\n");
-	SIM_RLM3_UART4_Transmit("ATE0\r\n");
-	SIM_RLM3_UART4_Receive("ATE0\r\nOK\r\n");
-	SIM_RLM3_UART4_Transmit("AT+CWAUTOCONN=0\r\n");
-	SIM_RLM3_UART4_Receive("OK\r\n");
 	SIM_RLM3_UART4_Transmit("AT+CIPMODE=0\r\n");
 	SIM_RLM3_UART4_Receive("OK\r\n");
 	SIM_RLM3_UART4_Transmit("AT+CIPMUX=1\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CWMODE_CUR=1\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CWAUTOCONN=0\r\n");
 	SIM_RLM3_UART4_Receive("FAIL\r\n");
 
 	ASSERT(!RLM3_WIFI_Init());
@@ -277,6 +313,8 @@ TEST_CASE(RLM3_WIFI_ServerConnect_HappyCase)
 	RLM3_WIFI_Init();
 	RLM3_WIFI_NetworkConnect("test-sid", "test-pwd");
 	ASSERT(RLM3_WIFI_ServerConnect(2, "test-server", "test-port"));
+	ASSERT(g_local_network_connect_calls.empty());
+	ASSERT(g_local_network_disconnect_calls.empty());
 }
 
 TEST_CASE(RLM3_WIFI_ServerConnect_Fail)
@@ -313,6 +351,8 @@ TEST_CASE(RLM3_WIFI_ServerDisconnect_HappyCase)
 	RLM3_WIFI_ServerConnect(2, "test-server", "test-port");
 	RLM3_WIFI_ServerDisconnect(2);
 	ASSERT(!RLM3_WIFI_IsServerConnected(2));
+	ASSERT(g_local_network_connect_calls.empty());
+	ASSERT(g_local_network_disconnect_calls.empty());
 }
 
 TEST_CASE(RLM3_WIFI_ServerDisconnect_Fail)
@@ -442,8 +482,6 @@ TEST_CASE(RLM3_WIFI_Receive_HappyCase)
 	SIM_AddDelay(100);
 	SIM_RLM3_UART4_Receive("+IPD,2,5:abcde\r\n");
 
-	g_client_thread = RLM3_GetCurrentTask();;
-	g_recv_buffer_size = 0;
 
 	RLM3_WIFI_Init();
 	RLM3_WIFI_NetworkConnect("test-sid", "test-pwd");
@@ -451,7 +489,81 @@ TEST_CASE(RLM3_WIFI_Receive_HappyCase)
 	while (g_recv_buffer_size < 5)
 		RLM3_Take();
 	ASSERT(std::strncmp((const char*)g_recv_buffer_data, "abcde", 5) == 0);
-
-	g_client_thread = nullptr;
 }
 
+TEST_CASE(RLM3_WIFI_LocalNetworkEnable_HappyCase)
+{
+	ExpectInit();
+	SIM_RLM3_UART4_Transmit("AT+CWMODE_CUR=3\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPAP_CUR=\"1.2.3.4\"\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CWSAP_CUR=\"test-local-ssid\",\"test-local-password\",1,3,4,0\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPSERVER=1,test-local-service\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+
+	RLM3_WIFI_Init();
+	ASSERT(!RLM3_WIFI_IsLocalNetworkEnabled());
+	ASSERT(RLM3_WIFI_LocalNetworkEnable("test-local-ssid", "test-local-password", 4, "1.2.3.4", "test-local-service"));
+	ASSERT(RLM3_WIFI_IsLocalNetworkEnabled());
+	ASSERT(g_local_network_connect_calls.size() == 0);
+}
+
+TEST_CASE(RLM3_WIFI_LocalNetworkEnable_Connect)
+{
+	ExpectInit();
+	SIM_RLM3_UART4_Transmit("AT+CWMODE_CUR=3\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPAP_CUR=\"1.2.3.4\"\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CWSAP_CUR=\"test-local-ssid\",\"test-local-password\",1,3,4,0\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPSERVER=1,test-local-service\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_AddDelay(1000);
+	SIM_RLM3_UART4_Receive("0,CONNECT\r\n");
+
+	RLM3_WIFI_Init();
+	ASSERT(!RLM3_WIFI_IsLocalNetworkEnabled());
+	ASSERT(RLM3_WIFI_LocalNetworkEnable("test-local-ssid", "test-local-password", 4, "1.2.3.4", "test-local-service"));
+	ASSERT(RLM3_WIFI_IsLocalNetworkEnabled());
+	RLM3_Take();
+	ASSERT(g_local_network_connect_calls.size() == 1);
+	ASSERT(g_local_network_connect_calls[0] == 0);
+}
+
+TEST_CASE(RLM3_WIFI_LocalNetworkEnable_Closed)
+{
+	ExpectInit();
+	SIM_RLM3_UART4_Transmit("AT+CWMODE_CUR=3\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPAP_CUR=\"1.2.3.4\"\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CWSAP_CUR=\"test-local-ssid\",\"test-local-password\",1,3,4,0\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPSERVER=1,test-local-service\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_AddDelay(1000);
+	SIM_RLM3_UART4_Receive("0,CONNECT\r\n");
+	SIM_RLM3_UART4_Receive("0,CLOSED\r\n");
+
+	RLM3_WIFI_Init();
+	ASSERT(!RLM3_WIFI_IsLocalNetworkEnabled());
+	ASSERT(RLM3_WIFI_LocalNetworkEnable("test-local-ssid", "test-local-password", 4, "1.2.3.4", "test-local-service"));
+	ASSERT(RLM3_WIFI_IsLocalNetworkEnabled());
+	RLM3_Take();
+	ASSERT(g_local_network_connect_calls.size() == 1);
+	ASSERT(g_local_network_connect_calls[0] == 0);
+	RLM3_Take();
+	ASSERT(g_local_network_disconnect_calls.size() == 1);
+	ASSERT(g_local_network_disconnect_calls[0] == 0);
+}
+
+TEST_SETUP(WIFI_TESTING_SETUP)
+{
+	g_client_thread = RLM3_GetCurrentTask();;
+	g_recv_buffer_size = 0;
+	g_local_network_connect_calls.clear();
+	g_local_network_disconnect_calls.clear();
+}
