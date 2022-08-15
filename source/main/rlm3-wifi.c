@@ -216,6 +216,33 @@ static void NotifyCommand(Command command)
 	RLM3_GiveFromISR(g_client_thread);
 }
 
+static void NotifyConnectToServer(size_t link_id)
+{
+	if (link_id >= RLM3_WIFI_LINK_COUNT)
+		return;
+	g_tcp_connected[link_id] = true;
+	NotifyCommand((Command)(COMMAND_CONNECT_BEGIN + link_id));
+	RLM3_WIFI_NetworkConnect_Callback(link_id, !g_is_tcp_outgoing[g_number]);
+}
+
+static void NotifyDisconnectFromServer(size_t link_id)
+{
+	if (link_id >= RLM3_WIFI_LINK_COUNT)
+		return;
+	if (!g_tcp_connected[g_number])
+		return;
+	NotifyCommand((Command)(COMMAND_CLOSED_BEGIN + link_id));
+	RLM3_WIFI_NetworkDisconnect_Callback(link_id, !g_is_tcp_outgoing[g_number]);
+	g_is_tcp_outgoing[link_id] = false;
+	g_tcp_connected[link_id] = false;
+}
+
+static void NotifyDisconnectFromAllServers()
+{
+	for (size_t i = 0; i < RLM3_WIFI_LINK_COUNT; i++)
+		NotifyDisconnectFromServer(i);
+}
+
 extern bool RLM3_WIFI_Init()
 {
 	ASSERT(COMMAND_COUNT < 32);
@@ -286,6 +313,8 @@ extern bool RLM3_WIFI_Init()
 extern void RLM3_WIFI_Deinit()
 {
 	RLM3_UART4_Deinit();
+
+	NotifyDisconnectFromAllServers();
 
 	HAL_GPIO_WritePin(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin, GPIO_PIN_RESET);
 	HAL_GPIO_DeInit(GPIOG, WIFI_ENABLE_Pin | WIFI_BOOT_MODE_Pin | WIFI_RESET_Pin);
@@ -607,7 +636,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_no_SPACE_ip:
-		if (x == '\r') { next = STATE_END; g_wifi_has_ip = false; for (size_t i = 0; i < RLM3_WIFI_LINK_COUNT; i++) g_tcp_connected[i] = false; }
+		if (x == '\r') { next = STATE_END; g_wifi_has_ip = false; NotifyDisconnectFromAllServers(); }
 		break;
 
 	case STATE_X_OK:
@@ -686,7 +715,7 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_WIFI_SPACE_DISCONNECT:
-		if (x == '\r') { next = STATE_END; g_wifi_connected = false; g_wifi_has_ip = false; for (size_t i = 0; i < RLM3_WIFI_LINK_COUNT; i++) g_tcp_connected[i] = false; NotifyCommand(COMMAND_WIFI_DISCONNECT); }
+		if (x == '\r') { next = STATE_END; g_wifi_connected = false; g_wifi_has_ip = false; NotifyDisconnectFromAllServers(); NotifyCommand(COMMAND_WIFI_DISCONNECT); }
 		break;
 
 	case STATE_X_WIFI_SPACE_GOT_SPACE_IP:
@@ -709,11 +738,11 @@ extern void RLM3_UART4_ReceiveCallback(uint8_t x)
 		break;
 
 	case STATE_X_NN_COMMA_CLOSED:
-		if (x == '\r') { next = STATE_END; if (g_number < RLM3_WIFI_LINK_COUNT) { g_tcp_connected[g_number] = false; NotifyCommand((Command)(COMMAND_CLOSED_BEGIN + g_number)); if (!g_is_tcp_outgoing[g_number]) RLM3_WIFI_LocalNetworkDisconnect_Callback(g_number); g_is_tcp_outgoing[g_number] = false; } }
+		if (x == '\r') { next = STATE_END; NotifyDisconnectFromServer(g_number); }
 		break;
 
 	case STATE_X_NN_COMMA_CONNECT:
-		if (x == '\r') { next = STATE_END; if (g_number < RLM3_WIFI_LINK_COUNT) { g_tcp_connected[g_number] = true; NotifyCommand((Command)(COMMAND_CONNECT_BEGIN + g_number)); if (!g_is_tcp_outgoing[g_number]) RLM3_WIFI_LocalNetworkConnect_Callback(g_number); } }
+		if (x == '\r') { next = STATE_END; NotifyConnectToServer(g_number); }
 		break;
 
 	case STATE_X_NN_COMMA_SEND_SPACE_OK:
@@ -794,12 +823,12 @@ extern __attribute__((weak)) void RLM3_WIFI_Receive_Callback(size_t link_id, uin
 	// DO NOT MODIFIY THIS FUNCTION.  Override it by declaring a non-weak version in your project files.
 }
 
-extern __attribute__((weak)) void RLM3_WIFI_LocalNetworkConnect_Callback(size_t link_id)
+extern __attribute__((weak)) void RLM3_WIFI_NetworkConnect_Callback(size_t link_id, bool local_connection)
 {
 	// DO NOT MODIFIY THIS FUNCTION.  Override it by declaring a non-weak version in your project files.
 }
 
-extern __attribute__((weak)) void RLM3_WIFI_LocalNetworkDisconnect_Callback(size_t link_id)
+extern __attribute__((weak)) void RLM3_WIFI_NetworkDisconnect_Callback(size_t link_id, bool local_connection)
 {
 	// DO NOT MODIFIY THIS FUNCTION.  Override it by declaring a non-weak version in your project files.
 }

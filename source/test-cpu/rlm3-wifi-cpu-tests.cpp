@@ -12,31 +12,34 @@
 
 
 volatile RLM3_Task g_client_thread = nullptr;
-volatile size_t g_recv_buffer_size = 0;
+volatile size_t g_recv_buffer_count = 0;
 volatile uint8_t g_recv_buffer_data[32];
 
-std::vector<size_t> g_local_network_connect_calls;
-std::vector<size_t> g_local_network_disconnect_calls;
+volatile size_t g_network_callback_count = 0;
+std::vector<std::pair<size_t, bool>> g_network_connect_calls;
+std::vector<std::pair<size_t, bool>> g_network_disconnect_calls;
 
 
 extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
 {
 	ASSERT(link_id == 2);
-	if (g_recv_buffer_size < sizeof(g_recv_buffer_data))
-		g_recv_buffer_data[g_recv_buffer_size] = data;
-	g_recv_buffer_size++;
+	if (g_recv_buffer_count < sizeof(g_recv_buffer_data))
+		g_recv_buffer_data[g_recv_buffer_count] = data;
+	g_recv_buffer_count++;
 	RLM3_GiveFromISR(g_client_thread);
 }
 
-extern void RLM3_WIFI_LocalNetworkConnect_Callback(size_t link_id)
+extern void RLM3_WIFI_NetworkConnect_Callback(size_t link_id, bool local_connection)
 {
-	g_local_network_connect_calls.push_back(link_id);
+	g_network_callback_count++;
+	g_network_connect_calls.emplace_back(link_id, local_connection);
 	RLM3_GiveFromISR(g_client_thread);
 }
 
-extern void RLM3_WIFI_LocalNetworkDisconnect_Callback(size_t link_id)
+extern void RLM3_WIFI_NetworkDisconnect_Callback(size_t link_id, bool local_connection)
 {
-	g_local_network_disconnect_calls.push_back(link_id);
+	g_network_callback_count++;
+	g_network_disconnect_calls.emplace_back(link_id, local_connection);
 	RLM3_GiveFromISR(g_client_thread);
 }
 
@@ -77,6 +80,8 @@ TEST_CASE(RLM3_WIFI_Init_HappyCase)
 	ASSERT(SIM_GPIO_Read(WIFI_ENABLE_GPIO_Port, WIFI_ENABLE_Pin));
 	ASSERT(SIM_GPIO_Read(WIFI_BOOT_MODE_GPIO_Port, WIFI_BOOT_MODE_Pin));
 	ASSERT(SIM_GPIO_Read(WIFI_RESET_GPIO_Port, WIFI_RESET_Pin));
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 0);
 }
 
 TEST_CASE(RLM3_WIFI_Init_PingTimeout)
@@ -185,6 +190,8 @@ TEST_CASE(RLM3_WIFI_DeInit_HappyCase)
 	ASSERT(!SIM_GPIO_IsEnabled(WIFI_ENABLE_GPIO_Port, WIFI_ENABLE_Pin));
 	ASSERT(!SIM_GPIO_IsEnabled(WIFI_BOOT_MODE_GPIO_Port, WIFI_BOOT_MODE_Pin));
 	ASSERT(!SIM_GPIO_IsEnabled(WIFI_RESET_GPIO_Port, WIFI_RESET_Pin));
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 0);
 }
 
 TEST_CASE(RLM3_WIFI_GetVersion_HappyCase)
@@ -201,6 +208,8 @@ TEST_CASE(RLM3_WIFI_GetVersion_HappyCase)
 
 	ASSERT(at_version == 0xFFFEFDFC);
 	ASSERT(sdk_version == 0xFBFAF9F8);
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 0);
 }
 
 TEST_CASE(RLM3_WIFI_GetVersion_Timeout)
@@ -241,6 +250,8 @@ TEST_CASE(RLM3_WIFI_NetworkConnect_HappyCase)
 	ASSERT(!RLM3_WIFI_IsNetworkConnected());
 	ASSERT(RLM3_WIFI_NetworkConnect("test-sid", "test-pwd"));
 	ASSERT(RLM3_WIFI_IsNetworkConnected());
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 0);
 }
 
 TEST_CASE(RLM3_WIFI_NetworkConnect_Error)
@@ -313,8 +324,10 @@ TEST_CASE(RLM3_WIFI_ServerConnect_HappyCase)
 	RLM3_WIFI_Init();
 	RLM3_WIFI_NetworkConnect("test-sid", "test-pwd");
 	ASSERT(RLM3_WIFI_ServerConnect(2, "test-server", "test-port"));
-	ASSERT(g_local_network_connect_calls.empty());
-	ASSERT(g_local_network_disconnect_calls.empty());
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 1);
+	ASSERT(g_network_connect_calls.size() == 1);
+	ASSERT(g_network_connect_calls.front() == std::make_pair((size_t)2, false));
 }
 
 TEST_CASE(RLM3_WIFI_ServerConnect_Fail)
@@ -330,6 +343,8 @@ TEST_CASE(RLM3_WIFI_ServerConnect_Fail)
 	RLM3_WIFI_Init();
 	RLM3_WIFI_NetworkConnect("test-sid", "test-pwd");
 	ASSERT(!RLM3_WIFI_ServerConnect(2,"test-server", "test-port"));
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 0);
 }
 
 TEST_CASE(RLM3_WIFI_ServerDisconnect_HappyCase)
@@ -351,8 +366,10 @@ TEST_CASE(RLM3_WIFI_ServerDisconnect_HappyCase)
 	RLM3_WIFI_ServerConnect(2, "test-server", "test-port");
 	RLM3_WIFI_ServerDisconnect(2);
 	ASSERT(!RLM3_WIFI_IsServerConnected(2));
-	ASSERT(g_local_network_connect_calls.empty());
-	ASSERT(g_local_network_disconnect_calls.empty());
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 2);
+	ASSERT(g_network_disconnect_calls.size() == 1);
+	ASSERT(g_network_disconnect_calls.front() == std::make_pair((size_t)2, false));
 }
 
 TEST_CASE(RLM3_WIFI_ServerDisconnect_Fail)
@@ -373,6 +390,9 @@ TEST_CASE(RLM3_WIFI_ServerDisconnect_Fail)
 	RLM3_WIFI_ServerConnect(2,"test-server", "test-port");
 	RLM3_WIFI_ServerDisconnect(2);
 	ASSERT(RLM3_WIFI_IsServerConnected(2));
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 1);
+	ASSERT(g_network_disconnect_calls.empty());
 }
 
 TEST_CASE(RLM3_WIFI_Transmit_HappyCase)
@@ -398,6 +418,8 @@ TEST_CASE(RLM3_WIFI_Transmit_HappyCase)
 	RLM3_WIFI_NetworkConnect("test-sid", "test-pwd");
 	RLM3_WIFI_ServerConnect(2, "test-server", "test-port");
 	ASSERT(RLM3_WIFI_Transmit(2, buffer, sizeof(buffer)));
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 1);
 }
 
 TEST_CASE(RLM3_WIFI_Transmit_Empty)
@@ -486,7 +508,7 @@ TEST_CASE(RLM3_WIFI_Receive_HappyCase)
 	RLM3_WIFI_Init();
 	RLM3_WIFI_NetworkConnect("test-sid", "test-pwd");
 	RLM3_WIFI_ServerConnect(2, "test-server", "test-port");
-	while (g_recv_buffer_size < 5)
+	while (g_recv_buffer_count < 5)
 		RLM3_Take();
 	ASSERT(std::strncmp((const char*)g_recv_buffer_data, "abcde", 5) == 0);
 }
@@ -507,7 +529,7 @@ TEST_CASE(RLM3_WIFI_LocalNetworkEnable_HappyCase)
 	ASSERT(!RLM3_WIFI_IsLocalNetworkEnabled());
 	ASSERT(RLM3_WIFI_LocalNetworkEnable("test-local-ssid", "test-local-password", 4, "1.2.3.4", "test-local-service"));
 	ASSERT(RLM3_WIFI_IsLocalNetworkEnabled());
-	ASSERT(g_local_network_connect_calls.size() == 0);
+	ASSERT(g_network_callback_count == 0);
 }
 
 TEST_CASE(RLM3_WIFI_LocalNetworkEnable_Connect)
@@ -529,8 +551,9 @@ TEST_CASE(RLM3_WIFI_LocalNetworkEnable_Connect)
 	ASSERT(RLM3_WIFI_LocalNetworkEnable("test-local-ssid", "test-local-password", 4, "1.2.3.4", "test-local-service"));
 	ASSERT(RLM3_WIFI_IsLocalNetworkEnabled());
 	RLM3_Take();
-	ASSERT(g_local_network_connect_calls.size() == 1);
-	ASSERT(g_local_network_connect_calls[0] == 0);
+	ASSERT(g_network_callback_count == 1);
+	ASSERT(g_network_connect_calls.size() == 1);
+	ASSERT(g_network_connect_calls.front() == std::make_pair((size_t)0, true));
 }
 
 TEST_CASE(RLM3_WIFI_LocalNetworkEnable_Closed)
@@ -553,17 +576,20 @@ TEST_CASE(RLM3_WIFI_LocalNetworkEnable_Closed)
 	ASSERT(RLM3_WIFI_LocalNetworkEnable("test-local-ssid", "test-local-password", 4, "1.2.3.4", "test-local-service"));
 	ASSERT(RLM3_WIFI_IsLocalNetworkEnabled());
 	RLM3_Take();
-	ASSERT(g_local_network_connect_calls.size() == 1);
-	ASSERT(g_local_network_connect_calls[0] == 0);
+	ASSERT(g_network_callback_count == 1);
+	ASSERT(g_network_connect_calls.size() == 1);
+	ASSERT(g_network_connect_calls.front() == std::make_pair((size_t)0, true));
 	RLM3_Take();
-	ASSERT(g_local_network_disconnect_calls.size() == 1);
-	ASSERT(g_local_network_disconnect_calls[0] == 0);
+	ASSERT(g_network_callback_count == 2);
+	ASSERT(g_network_disconnect_calls.size() == 1);
+	ASSERT(g_network_disconnect_calls.front() == std::make_pair((size_t)0, true));
 }
 
 TEST_SETUP(WIFI_TESTING_SETUP)
 {
 	g_client_thread = RLM3_GetCurrentTask();;
-	g_recv_buffer_size = 0;
-	g_local_network_connect_calls.clear();
-	g_local_network_disconnect_calls.clear();
+	g_recv_buffer_count = 0;
+	g_network_callback_count = 0;
+	g_network_connect_calls.clear();
+	g_network_disconnect_calls.clear();
 }

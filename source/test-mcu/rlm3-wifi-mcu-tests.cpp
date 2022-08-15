@@ -21,14 +21,18 @@ extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data)
 	g_recv_count++;
 }
 
-extern void RLM3_WIFI_LocalNetworkConnect_Callback(size_t link_id)
+extern void RLM3_WIFI_NetworkConnect_Callback(size_t link_id, bool local_connection)
 {
+	if (!local_connection)
+		return;
 	ASSERT(g_local_network == k_no_network);
 	g_local_network = link_id;
 }
 
-extern void RLM3_WIFI_LocalNetworkDisconnect_Callback(size_t link_id)
+extern void RLM3_WIFI_NetworkDisconnect_Callback(size_t link_id, bool local_connection)
 {
+	if (!local_connection)
+		return;
 	ASSERT(link_id == g_local_network);
 	g_local_network = k_no_network;
 }
