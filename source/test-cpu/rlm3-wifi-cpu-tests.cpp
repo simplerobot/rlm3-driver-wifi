@@ -422,6 +422,35 @@ TEST_CASE(RLM3_WIFI_Transmit_HappyCase)
 	ASSERT(g_network_callback_count == 1);
 }
 
+TEST_CASE(RLM3_WIFI_Transmit2_HappyCase)
+{
+	uint8_t bufferA[] = { 'a', 'b', 'c' };
+	uint8_t bufferB[] = { 'd', 'c', 'b', 'a' };
+
+	ExpectInit();
+	SIM_RLM3_UART4_Transmit("AT+CWJAP_CUR=\"test-sid\",\"test-pwd\"\r\n");
+	SIM_RLM3_UART4_Receive("WIFI CONNECTED\r\n");
+	SIM_RLM3_UART4_Receive("WIFI GOT IP\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPSTART=2,\"TCP\",\"test-server\",test-port\r\n");
+	SIM_RLM3_UART4_Receive("2,CONNECT\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Transmit("AT+CIPSEND=2,7\r\n");
+	SIM_RLM3_UART4_Receive("OK\r\n");
+	SIM_RLM3_UART4_Receive("> \r\n");
+	SIM_RLM3_UART4_Transmit("abc");
+	SIM_RLM3_UART4_Transmit("dcba");
+	SIM_RLM3_UART4_Receive("Recv 7 bytes\r\n");
+	SIM_RLM3_UART4_Receive("SEND OK\r\n");
+
+	RLM3_WIFI_Init();
+	RLM3_WIFI_NetworkConnect("test-sid", "test-pwd");
+	RLM3_WIFI_ServerConnect(2, "test-server", "test-port");
+	ASSERT(RLM3_WIFI_Transmit2(2, bufferA, sizeof(bufferA), bufferB, sizeof(bufferB)));
+	ASSERT(g_recv_buffer_count == 0);
+	ASSERT(g_network_callback_count == 1);
+}
+
 TEST_CASE(RLM3_WIFI_Transmit_Empty)
 {
 	uint8_t buffer[] = { 'a', 'b', 'c', 'd', 'c', 'b', 'a' };

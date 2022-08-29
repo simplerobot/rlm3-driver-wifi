@@ -30,6 +30,7 @@ extern void RLM3_WIFI_LocalNetworkDisable();
 extern bool RLM3_WIFI_IsLocalNetworkEnabled();
 
 extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size);
+extern bool RLM3_WIFI_Transmit2(size_t link_id, const uint8_t* data_a, size_t size_a, const uint8_t* data_b, size_t size_b);
 extern void RLM3_WIFI_Receive_Callback(size_t link_id, uint8_t data);
 extern void RLM3_WIFI_NetworkConnect_Callback(size_t link_id, bool local_connection);
 extern void RLM3_WIFI_NetworkDisconnect_Callback(size_t link_id, bool local_connection);

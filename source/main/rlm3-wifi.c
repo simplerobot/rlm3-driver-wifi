@@ -482,12 +482,13 @@ extern bool RLM3_WIFI_IsLocalNetworkEnabled()
 	return g_is_local_network_enabled;
 }
 
-extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size)
+extern bool RLM3_WIFI_Transmit2(size_t link_id, const uint8_t* data_a, size_t size_a, const uint8_t* data_b, size_t size_b)
 {
 	if (link_id >= RLM3_WIFI_LINK_COUNT)
 		return false;
 
 	// We only support small blocks for now.
+	size_t size = size_a + size_b;
 	if (0 >= size || size > 1024)
 		return false;
 	char size_str[5];
@@ -503,8 +504,10 @@ extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size)
 		result = WaitForResponse("transmit_b", 10000, FLAG(COMMAND_OK), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 	if (result)
 		result = WaitForResponse("transmit_c", 10000, FLAG(COMMAND_GO_AHEAD), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
-	if (result)
-		SendRaw(data, size);
+	if (result && size_a > 0)
+		SendRaw(data_a, size_a);
+	if (result && size_b > 0)
+		SendRaw(data_b, size_b);
 	if (result)
 		result = WaitForResponse("transmit_d", 10000, FLAG(COMMAND_BYTES_RECEIVED), FLAG(COMMAND_ERROR) | FLAG(COMMAND_FAIL));
 	if (result)
@@ -512,6 +515,11 @@ extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size)
 	EndCommand();
 
 	return result;
+}
+
+extern bool RLM3_WIFI_Transmit(size_t link_id, const uint8_t* data, size_t size)
+{
+	return RLM3_WIFI_Transmit2(link_id, data, size, NULL, 0);
 }
 
 extern void RLM3_UART4_ReceiveCallback(uint8_t x)
